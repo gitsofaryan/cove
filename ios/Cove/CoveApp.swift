@@ -43,6 +43,7 @@ struct CoveApp: App {
         case ready(AppManager, AuthManager)
         case catastrophicError
         case restoring
+        case offerCloudRestore
         case fatalError(String)
     }
 
@@ -89,9 +90,18 @@ struct CoveApp: App {
                 case .restoring:
                     DeviceRestoreView(
                         onComplete: {
-                            completeBootstrap()
+                            completeBootstrap(skipCloudCheck: true)
                         },
                         onError: { _ in }
+                    )
+                case .offerCloudRestore:
+                    CloudRestoreOfferView(
+                        onRestore: {
+                            startupState = .restoring
+                        },
+                        onSkip: {
+                            finishBootstrap()
+                        }
                     )
                 case let .fatalError(message):
                     CoverView(errorMessage: message)
@@ -208,9 +218,31 @@ extension CoveApp {
         }
     }
 
-    private func completeBootstrap(warning: String? = nil) {
+    private func completeBootstrap(warning: String? = nil, skipCloudCheck: Bool = false) {
         CloudBackupManager.shared.rust.syncPersistedState()
 
+        let backupState = CloudBackupManager.shared.state
+
+        // fresh install with no existing backup enabled — check if cloud has a backup
+        if !skipCloudCheck, case .disabled = backupState {
+            Task.detached {
+                let cloud = CloudStorageAccessImpl()
+                let hasBackup = (try? cloud.hasCloudBackup()) ?? false
+                await MainActor.run {
+                    if hasBackup {
+                        self.startupState = .offerCloudRestore
+                    } else {
+                        self.finishBootstrap(warning: warning)
+                    }
+                }
+            }
+            return
+        }
+
+        finishBootstrap(warning: warning)
+    }
+
+    private func finishBootstrap(warning: String? = nil) {
         let appManager = AppManager.shared
         appManager.asyncRuntimeReady = true
 
