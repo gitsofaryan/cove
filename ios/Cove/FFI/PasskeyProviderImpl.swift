@@ -27,6 +27,7 @@ final class PasskeyProviderImpl: PasskeyProvider, @unchecked Sendable {
                 name: "Cove Wallet",
                 userID: userId
             )
+            request.prf = .checkForSupport
 
             let ctrl = ASAuthorizationController(authorizationRequests: [request])
             ctrl.delegate = delegate
@@ -44,6 +45,12 @@ final class PasskeyProviderImpl: PasskeyProvider, @unchecked Sendable {
             credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration
         else {
             throw PasskeyError.CreationFailed("unexpected credential type")
+        }
+
+        if let prfOutput = registration.prf {
+            Log.info("[PASSKEY] registration PRF supported: \(prfOutput.isSupported)")
+        } else {
+            Log.warn("[PASSKEY] registration PRF output is nil — PRF may not work")
         }
 
         return registration.credentialID
@@ -92,6 +99,10 @@ final class PasskeyProviderImpl: PasskeyProvider, @unchecked Sendable {
             credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion
         else {
             throw PasskeyError.AuthenticationFailed("unexpected credential type")
+        }
+
+        if assertion.prf == nil {
+            Log.error("[PASSKEY] assertion.prf is nil — authenticator did not return PRF output")
         }
 
         guard let prfKey = assertion.prf?.first else {
