@@ -25,7 +25,11 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum CloudBackup {
     Disabled,
-    Enabled { last_sync: Option<u64> },
+    Enabled {
+        last_sync: Option<u64>,
+        #[serde(default)]
+        wallet_count: Option<u32>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
@@ -44,6 +48,7 @@ pub enum GlobalConfigKey {
     DecoySelectedWalletId,
     LockedAt,
     CloudBackup,
+    CloudBackupWallets,
 }
 
 impl From<GlobalConfigKey> for &'static str {
@@ -66,6 +71,7 @@ impl From<GlobalConfigKey> for &'static str {
             GlobalConfigKey::DecoySelectedWalletId => "decoy_selected_wallet_id",
             GlobalConfigKey::LockedAt => "locked_at",
             GlobalConfigKey::CloudBackup => "cloud_backup",
+            GlobalConfigKey::CloudBackupWallets => "cloud_backup_wallets",
         }
     }
 }
@@ -285,6 +291,23 @@ impl GlobalConfigTable {
         self.delete(GlobalConfigKey::CloudBackup)
     }
 
+    pub fn cloud_backup_wallets(
+        &self,
+    ) -> Vec<crate::manager::cloud_backup_manager::CloudBackedUpWallet> {
+        let json =
+            self.get(GlobalConfigKey::CloudBackupWallets).unwrap_or(None).unwrap_or_default();
+        serde_json::from_str(&json).unwrap_or_default()
+    }
+
+    pub fn set_cloud_backup_wallets(
+        &self,
+        wallets: &[crate::manager::cloud_backup_manager::CloudBackedUpWallet],
+    ) -> Result<()> {
+        let json = serde_json::to_string(wallets)
+            .map_err(|error| SerdeError::SerializationError(error.to_string()))?;
+        self.set(GlobalConfigKey::CloudBackupWallets, json)
+    }
+
     #[uniffi::method(name = "selectedFiatCurrency")]
     fn _selected_fiat_currency(&self) -> FiatCurrency {
         self.fiat_currency().unwrap_or_default()
@@ -416,14 +439,31 @@ mod tests {
         let parsed: CloudBackup = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, CloudBackup::Disabled);
 
-        let enabled_no_sync = CloudBackup::Enabled { last_sync: None };
+        let enabled_no_sync = CloudBackup::Enabled { last_sync: None, wallet_count: None };
         let json = serde_json::to_string(&enabled_no_sync).unwrap();
         let parsed: CloudBackup = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, CloudBackup::Enabled { last_sync: None });
+        assert_eq!(parsed, CloudBackup::Enabled { last_sync: None, wallet_count: None });
 
-        let enabled_with_sync = CloudBackup::Enabled { last_sync: Some(1700000000) };
+        let enabled_with_sync =
+            CloudBackup::Enabled { last_sync: Some(1700000000), wallet_count: Some(3) };
         let json = serde_json::to_string(&enabled_with_sync).unwrap();
         let parsed: CloudBackup = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, CloudBackup::Enabled { last_sync: Some(1700000000) });
+        assert_eq!(
+            parsed,
+            CloudBackup::Enabled { last_sync: Some(1700000000), wallet_count: Some(3) }
+        );
+    }
+
+    #[test]
+    fn test_cloud_backup_backwards_compat() {
+        use super::CloudBackup;
+
+        // old format without wallet_count should deserialize with None
+        let old_json = r#"{"Enabled":{"last_sync":1700000000}}"#;
+        let parsed: CloudBackup = serde_json::from_str(old_json).unwrap();
+        assert_eq!(
+            parsed,
+            CloudBackup::Enabled { last_sync: Some(1700000000), wallet_count: None }
+        );
     }
 }

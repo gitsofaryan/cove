@@ -3993,6 +3993,8 @@ public protocol GlobalConfigTableProtocol: AnyObject, Sendable {
     
     func cloudBackup()  -> CloudBackup
     
+    func cloudBackupWallets()  -> [CloudBackedUpWallet]
+    
     func colorScheme()  -> ColorSchemeSelection
     
     func delete(key: GlobalConfigKey) throws 
@@ -4024,6 +4026,8 @@ public protocol GlobalConfigTableProtocol: AnyObject, Sendable {
     func setColorScheme(colorScheme: ColorSchemeSelection) throws 
     
     func setCloudBackup(value: CloudBackup) throws 
+    
+    func setCloudBackupWallets(wallets: [CloudBackedUpWallet]) throws 
     
     func setHashedPinCode(hashedPinCode: String) throws 
     
@@ -4105,6 +4109,14 @@ open func clearSelectedWallet()throws   {try rustCallWithError(FfiConverterTypeD
 open func cloudBackup() -> CloudBackup  {
     return try!  FfiConverterTypeCloudBackup_lift(try! rustCall() {
     uniffi_cove_fn_method_globalconfigtable_cloud_backup(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+open func cloudBackupWallets() -> [CloudBackedUpWallet]  {
+    return try!  FfiConverterSequenceTypeCloudBackedUpWallet.lift(try! rustCall() {
+    uniffi_cove_fn_method_globalconfigtable_cloud_backup_wallets(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -4234,6 +4246,14 @@ open func setCloudBackup(value: CloudBackup)throws   {try rustCallWithError(FfiC
     uniffi_cove_fn_method_globalconfigtable_set_cloud_backup(
             self.uniffiCloneHandle(),
         FfiConverterTypeCloudBackup_lower(value),$0
+    )
+}
+}
+    
+open func setCloudBackupWallets(wallets: [CloudBackedUpWallet])throws   {try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
+    uniffi_cove_fn_method_globalconfigtable_set_cloud_backup_wallets(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeCloudBackedUpWallet.lower(wallets),$0
     )
 }
 }
@@ -7072,6 +7092,19 @@ public func FfiConverterTypeRustAuthManager_lower(_ value: RustAuthManager) -> U
 
 public protocol RustCloudBackupManagerProtocol: AnyObject, Sendable {
     
+    /**
+     * Number of wallets in the cloud backup
+     */
+    func backupWalletCount()  -> UInt32?
+    
+    /**
+     * Cloud backup detail for the detail screen
+     *
+     * Returns None if cloud backup is disabled. Compares cached wallet list
+     * against current local wallets to determine backup status
+     */
+    func cloudBackupDetail()  -> CloudBackupDetail?
+    
     func currentState()  -> CloudBackupState
     
     /**
@@ -7083,6 +7116,14 @@ public protocol RustCloudBackupManagerProtocol: AnyObject, Sendable {
     func enableCloudBackup() 
     
     func listenForUpdates(reconciler: CloudBackupManagerReconciler) 
+    
+    /**
+     * Rebuild cloud backup detail using the manifest as source of truth
+     *
+     * Downloads the manifest from CloudKit, reconciles the local cache,
+     * and returns accurate backup status. Returns None if disabled or on error
+     */
+    func refreshCloudBackupDetail()  -> CloudBackupDetail?
     
     /**
      * Restore from cloud backup — called after device restore
@@ -7098,6 +7139,13 @@ public protocol RustCloudBackupManagerProtocol: AnyObject, Sendable {
      * even before the reconciler has delivered its first message
      */
     func syncPersistedState() 
+    
+    /**
+     * Sync any local wallets that aren't in the cloud backup yet
+     *
+     * Called from the iOS sync button on the detail screen
+     */
+    func syncUnsyncedWallets() 
     
 }
 open class RustCloudBackupManager: RustCloudBackupManagerProtocol, @unchecked Sendable {
@@ -7160,6 +7208,31 @@ public convenience init() {
     
 
     
+    /**
+     * Number of wallets in the cloud backup
+     */
+open func backupWalletCount() -> UInt32?  {
+    return try!  FfiConverterOptionUInt32.lift(try! rustCall() {
+    uniffi_cove_fn_method_rustcloudbackupmanager_backup_wallet_count(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Cloud backup detail for the detail screen
+     *
+     * Returns None if cloud backup is disabled. Compares cached wallet list
+     * against current local wallets to determine backup status
+     */
+open func cloudBackupDetail() -> CloudBackupDetail?  {
+    return try!  FfiConverterOptionTypeCloudBackupDetail.lift(try! rustCall() {
+    uniffi_cove_fn_method_rustcloudbackupmanager_cloud_backup_detail(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
 open func currentState() -> CloudBackupState  {
     return try!  FfiConverterTypeCloudBackupState_lift(try! rustCall() {
     uniffi_cove_fn_method_rustcloudbackupmanager_current_state(
@@ -7190,6 +7263,20 @@ open func listenForUpdates(reconciler: CloudBackupManagerReconciler)  {try! rust
 }
     
     /**
+     * Rebuild cloud backup detail using the manifest as source of truth
+     *
+     * Downloads the manifest from CloudKit, reconciles the local cache,
+     * and returns accurate backup status. Returns None if disabled or on error
+     */
+open func refreshCloudBackupDetail() -> CloudBackupDetail?  {
+    return try!  FfiConverterOptionTypeCloudBackupDetail.lift(try! rustCall() {
+    uniffi_cove_fn_method_rustcloudbackupmanager_refresh_cloud_backup_detail(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
      * Restore from cloud backup — called after device restore
      *
      * Uses discoverable credential assertion (no local keychain state required)
@@ -7209,6 +7296,18 @@ open func restoreFromCloudBackup()  {try! rustCall() {
      */
 open func syncPersistedState()  {try! rustCall() {
     uniffi_cove_fn_method_rustcloudbackupmanager_sync_persisted_state(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Sync any local wallets that aren't in the cloud backup yet
+     *
+     * Called from the iOS sync button on the detail screen
+     */
+open func syncUnsyncedWallets()  {try! rustCall() {
+    uniffi_cove_fn_method_rustcloudbackupmanager_sync_unsynced_wallets(
             self.uniffiCloneHandle(),$0
     )
 }
@@ -11467,6 +11566,11 @@ public protocol WalletsTableProtocol: AnyObject, Sendable {
     
     func allSortedActive() throws  -> [WalletMetadata]
     
+    /**
+     * Check if any wallets exist across all networks and modes
+     */
+    func hasAnyWallets() throws  -> Bool
+    
     func isEmpty() throws  -> Bool
     
     func len(network: Network, mode: WalletMode) throws  -> UInt16
@@ -11536,6 +11640,17 @@ open func all()throws  -> [WalletMetadata]  {
 open func allSortedActive()throws  -> [WalletMetadata]  {
     return try  FfiConverterSequenceTypeWalletMetadata.lift(try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
     uniffi_cove_fn_method_walletstable_all_sorted_active(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Check if any wallets exist across all networks and modes
+     */
+open func hasAnyWallets()throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeDatabaseError_lift) {
+    uniffi_cove_fn_method_walletstable_has_any_wallets(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -12494,6 +12609,138 @@ public func FfiConverterTypeBackupWalletSummary_lower(_ value: BackupWalletSumma
 }
 
 
+public struct CloudBackedUpWallet: Equatable, Hashable {
+    public var id: WalletId
+    public var name: String
+    public var network: Network
+    public var walletMode: WalletMode
+    public var walletType: WalletType
+    public var fingerprint: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: WalletId, name: String, network: Network, walletMode: WalletMode, walletType: WalletType, fingerprint: String?) {
+        self.id = id
+        self.name = name
+        self.network = network
+        self.walletMode = walletMode
+        self.walletType = walletType
+        self.fingerprint = fingerprint
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CloudBackedUpWallet: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCloudBackedUpWallet: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CloudBackedUpWallet {
+        return
+            try CloudBackedUpWallet(
+                id: FfiConverterTypeWalletId.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                network: FfiConverterTypeNetwork.read(from: &buf), 
+                walletMode: FfiConverterTypeWalletMode.read(from: &buf), 
+                walletType: FfiConverterTypeWalletType.read(from: &buf), 
+                fingerprint: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CloudBackedUpWallet, into buf: inout [UInt8]) {
+        FfiConverterTypeWalletId.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterTypeNetwork.write(value.network, into: &buf)
+        FfiConverterTypeWalletMode.write(value.walletMode, into: &buf)
+        FfiConverterTypeWalletType.write(value.walletType, into: &buf)
+        FfiConverterOptionString.write(value.fingerprint, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackedUpWallet_lift(_ buf: RustBuffer) throws -> CloudBackedUpWallet {
+    return try FfiConverterTypeCloudBackedUpWallet.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackedUpWallet_lower(_ value: CloudBackedUpWallet) -> RustBuffer {
+    return FfiConverterTypeCloudBackedUpWallet.lower(value)
+}
+
+
+public struct CloudBackupDetail: Equatable, Hashable {
+    public var lastSync: UInt64?
+    public var backedUp: [CloudBackupWalletItem]
+    public var notBackedUp: [CloudBackupWalletItem]
+    public var deletedFromDevice: [CloudBackupWalletItem]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(lastSync: UInt64?, backedUp: [CloudBackupWalletItem], notBackedUp: [CloudBackupWalletItem], deletedFromDevice: [CloudBackupWalletItem]) {
+        self.lastSync = lastSync
+        self.backedUp = backedUp
+        self.notBackedUp = notBackedUp
+        self.deletedFromDevice = deletedFromDevice
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CloudBackupDetail: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCloudBackupDetail: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CloudBackupDetail {
+        return
+            try CloudBackupDetail(
+                lastSync: FfiConverterOptionUInt64.read(from: &buf), 
+                backedUp: FfiConverterSequenceTypeCloudBackupWalletItem.read(from: &buf), 
+                notBackedUp: FfiConverterSequenceTypeCloudBackupWalletItem.read(from: &buf), 
+                deletedFromDevice: FfiConverterSequenceTypeCloudBackupWalletItem.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CloudBackupDetail, into buf: inout [UInt8]) {
+        FfiConverterOptionUInt64.write(value.lastSync, into: &buf)
+        FfiConverterSequenceTypeCloudBackupWalletItem.write(value.backedUp, into: &buf)
+        FfiConverterSequenceTypeCloudBackupWalletItem.write(value.notBackedUp, into: &buf)
+        FfiConverterSequenceTypeCloudBackupWalletItem.write(value.deletedFromDevice, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupDetail_lift(_ buf: RustBuffer) throws -> CloudBackupDetail {
+    return try FfiConverterTypeCloudBackupDetail.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupDetail_lower(_ value: CloudBackupDetail) -> RustBuffer {
+    return FfiConverterTypeCloudBackupDetail.lower(value)
+}
+
+
 public struct CloudBackupRestoreReport: Equatable, Hashable {
     public var walletsRestored: UInt32
     public var walletsFailed: UInt32
@@ -12549,6 +12796,76 @@ public func FfiConverterTypeCloudBackupRestoreReport_lift(_ buf: RustBuffer) thr
 #endif
 public func FfiConverterTypeCloudBackupRestoreReport_lower(_ value: CloudBackupRestoreReport) -> RustBuffer {
     return FfiConverterTypeCloudBackupRestoreReport.lower(value)
+}
+
+
+public struct CloudBackupWalletItem: Equatable, Hashable {
+    public var name: String
+    public var network: Network
+    public var walletMode: WalletMode
+    public var walletType: WalletType
+    public var fingerprint: String?
+    public var status: CloudBackupWalletStatus
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, network: Network, walletMode: WalletMode, walletType: WalletType, fingerprint: String?, status: CloudBackupWalletStatus) {
+        self.name = name
+        self.network = network
+        self.walletMode = walletMode
+        self.walletType = walletType
+        self.fingerprint = fingerprint
+        self.status = status
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CloudBackupWalletItem: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCloudBackupWalletItem: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CloudBackupWalletItem {
+        return
+            try CloudBackupWalletItem(
+                name: FfiConverterString.read(from: &buf), 
+                network: FfiConverterTypeNetwork.read(from: &buf), 
+                walletMode: FfiConverterTypeWalletMode.read(from: &buf), 
+                walletType: FfiConverterTypeWalletType.read(from: &buf), 
+                fingerprint: FfiConverterOptionString.read(from: &buf), 
+                status: FfiConverterTypeCloudBackupWalletStatus.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CloudBackupWalletItem, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterTypeNetwork.write(value.network, into: &buf)
+        FfiConverterTypeWalletMode.write(value.walletMode, into: &buf)
+        FfiConverterTypeWalletType.write(value.walletType, into: &buf)
+        FfiConverterOptionString.write(value.fingerprint, into: &buf)
+        FfiConverterTypeCloudBackupWalletStatus.write(value.status, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupWalletItem_lift(_ buf: RustBuffer) throws -> CloudBackupWalletItem {
+    return try FfiConverterTypeCloudBackupWalletItem.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupWalletItem_lower(_ value: CloudBackupWalletItem) -> RustBuffer {
+    return FfiConverterTypeCloudBackupWalletItem.lower(value)
 }
 
 
@@ -16985,7 +17302,7 @@ public func FfiConverterTypeCkTapError_lower(_ value: CkTapError) -> RustBuffer 
 public enum CloudBackup: Equatable, Hashable {
     
     case disabled
-    case enabled(lastSync: UInt64?
+    case enabled(lastSync: UInt64?, walletCount: UInt32?
     )
 
 
@@ -17010,7 +17327,7 @@ public struct FfiConverterTypeCloudBackup: FfiConverterRustBuffer {
         
         case 1: return .disabled
         
-        case 2: return .enabled(lastSync: try FfiConverterOptionUInt64.read(from: &buf)
+        case 2: return .enabled(lastSync: try FfiConverterOptionUInt64.read(from: &buf), walletCount: try FfiConverterOptionUInt32.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -17025,9 +17342,10 @@ public struct FfiConverterTypeCloudBackup: FfiConverterRustBuffer {
             writeInt(&buf, Int32(1))
         
         
-        case let .enabled(lastSync):
+        case let .enabled(lastSync,walletCount):
             writeInt(&buf, Int32(2))
             FfiConverterOptionUInt64.write(lastSync, into: &buf)
+            FfiConverterOptionUInt32.write(walletCount, into: &buf)
             
         }
     }
@@ -17227,6 +17545,80 @@ public func FfiConverterTypeCloudBackupState_lift(_ buf: RustBuffer) throws -> C
 #endif
 public func FfiConverterTypeCloudBackupState_lower(_ value: CloudBackupState) -> RustBuffer {
     return FfiConverterTypeCloudBackupState.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum CloudBackupWalletStatus: Equatable, Hashable {
+    
+    case backedUp
+    case notBackedUp
+    case deletedFromDevice
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CloudBackupWalletStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCloudBackupWalletStatus: FfiConverterRustBuffer {
+    typealias SwiftType = CloudBackupWalletStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CloudBackupWalletStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .backedUp
+        
+        case 2: return .notBackedUp
+        
+        case 3: return .deletedFromDevice
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CloudBackupWalletStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .backedUp:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .notBackedUp:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .deletedFromDevice:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupWalletStatus_lift(_ buf: RustBuffer) throws -> CloudBackupWalletStatus {
+    return try FfiConverterTypeCloudBackupWalletStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupWalletStatus_lower(_ value: CloudBackupWalletStatus) -> RustBuffer {
+    return FfiConverterTypeCloudBackupWalletStatus.lower(value)
 }
 
 
@@ -19060,6 +19452,7 @@ public enum GlobalConfigKey: Equatable, Hashable {
     case decoySelectedWalletId
     case lockedAt
     case cloudBackup
+    case cloudBackupWallets
 
 
 
@@ -19109,6 +19502,8 @@ public struct FfiConverterTypeGlobalConfigKey: FfiConverterRustBuffer {
         case 13: return .lockedAt
         
         case 14: return .cloudBackup
+        
+        case 15: return .cloudBackupWallets
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -19173,6 +19568,10 @@ public struct FfiConverterTypeGlobalConfigKey: FfiConverterRustBuffer {
         
         case .cloudBackup:
             writeInt(&buf, Int32(14))
+        
+        
+        case .cloudBackupWallets:
+            writeInt(&buf, Int32(15))
         
         }
     }
@@ -24223,6 +24622,7 @@ public enum SettingsRoute: Equatable, Hashable {
     )
     case allWallets
     case about
+    case cloudBackup
 
 
 
@@ -24260,6 +24660,8 @@ public struct FfiConverterTypeSettingsRoute: FfiConverterRustBuffer {
         case 7: return .allWallets
         
         case 8: return .about
+        
+        case 9: return .cloudBackup
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -24301,6 +24703,10 @@ public struct FfiConverterTypeSettingsRoute: FfiConverterRustBuffer {
         
         case .about:
             writeInt(&buf, Int32(8))
+        
+        
+        case .cloudBackup:
+            writeInt(&buf, Int32(9))
         
         }
     }
@@ -30251,6 +30657,30 @@ fileprivate struct FfiConverterOptionTypePsbt: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCloudBackupDetail: FfiConverterRustBuffer {
+    typealias SwiftType = CloudBackupDetail?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCloudBackupDetail.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCloudBackupDetail.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeDeriveInfo: FfiConverterRustBuffer {
     typealias SwiftType = DeriveInfo?
 
@@ -30753,6 +31183,56 @@ fileprivate struct FfiConverterSequenceTypeBackupWalletSummary: FfiConverterRust
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeBackupWalletSummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCloudBackedUpWallet: FfiConverterRustBuffer {
+    typealias SwiftType = [CloudBackedUpWallet]
+
+    public static func write(_ value: [CloudBackedUpWallet], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCloudBackedUpWallet.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CloudBackedUpWallet] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CloudBackedUpWallet]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCloudBackedUpWallet.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCloudBackupWalletItem: FfiConverterRustBuffer {
+    typealias SwiftType = [CloudBackupWalletItem]
+
+    public static func write(_ value: [CloudBackupWalletItem], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCloudBackupWalletItem.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CloudBackupWalletItem] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CloudBackupWalletItem]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCloudBackupWalletItem.read(from: &buf))
         }
         return seq
     }
@@ -32048,6 +32528,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_checksum_method_globalconfigtable_cloud_backup() != 65410) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_cove_checksum_method_globalconfigtable_cloud_backup_wallets() != 11927) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_cove_checksum_method_globalconfigtable_colorscheme() != 59965) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -32094,6 +32577,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_globalconfigtable_set_cloud_backup() != 11846) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_method_globalconfigtable_set_cloud_backup_wallets() != 15805) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_globalconfigtable_set_hashed_pin_code() != 44857) {
@@ -32148,6 +32634,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_walletstable_all_sorted_active() != 25765) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_method_walletstable_has_any_wallets() != 24799) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_walletstable_is_empty() != 59967) {
@@ -32255,6 +32744,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_checksum_method_rustauthmanager_validate_security_action() != 4302) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_cove_checksum_method_rustcloudbackupmanager_backup_wallet_count() != 17456) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_method_rustcloudbackupmanager_cloud_backup_detail() != 23005) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_current_state() != 41818) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -32264,10 +32759,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_listen_for_updates() != 57718) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_cove_checksum_method_rustcloudbackupmanager_refresh_cloud_backup_detail() != 37506) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_restore_from_cloud_backup() != 40792) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_sync_persisted_state() != 19758) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_method_rustcloudbackupmanager_sync_unsynced_wallets() != 50116) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcoincontrolmanager_button_presentation() != 24764) {

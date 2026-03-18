@@ -5,6 +5,7 @@ use cove_util::ResultExt as _;
 use flume::{Receiver, Sender};
 use parking_lot::RwLock;
 use rand::RngExt as _;
+use serde::{Deserialize, Serialize};
 use std::str::FromStr as _;
 use strum::IntoEnumIterator as _;
 use tracing::{error, info, warn};
@@ -23,7 +24,9 @@ use cove_types::network::Network;
 
 use crate::database::Database;
 use crate::database::global_config::CloudBackup;
-use crate::wallet::metadata::WalletType;
+use crate::wallet::metadata::{
+    WalletId, WalletMetadata, WalletMode as LocalWalletMode, WalletType,
+};
 
 const RP_ID: &str = "covebitcoinwallet.com";
 const CREDENTIAL_ID_KEY: &str = "cspp::v1::credential_id";
@@ -56,6 +59,41 @@ pub struct CloudBackupRestoreReport {
     pub wallets_restored: u32,
     pub wallets_failed: u32,
     pub failed_wallet_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq, uniffi::Record)]
+pub struct CloudBackedUpWallet {
+    pub id: WalletId,
+    pub name: String,
+    pub network: Network,
+    pub wallet_mode: LocalWalletMode,
+    pub wallet_type: WalletType,
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq, uniffi::Enum)]
+pub enum CloudBackupWalletStatus {
+    BackedUp,
+    NotBackedUp,
+    DeletedFromDevice,
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq, uniffi::Record)]
+pub struct CloudBackupWalletItem {
+    pub name: String,
+    pub network: Network,
+    pub wallet_mode: LocalWalletMode,
+    pub wallet_type: WalletType,
+    pub fingerprint: Option<String>,
+    pub status: CloudBackupWalletStatus,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CloudBackupDetail {
+    pub last_sync: Option<u64>,
+    pub backed_up: Vec<CloudBackupWalletItem>,
+    pub not_backed_up: Vec<CloudBackupWalletItem>,
+    pub deleted_from_device: Vec<CloudBackupWalletItem>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -133,6 +171,24 @@ impl RustCloudBackupManager {
         self.state.read().clone()
     }
 
+    /// Number of wallets in the cloud backup
+    pub fn backup_wallet_count(&self) -> Option<u32> {
+        let db = Database::global();
+        match db.global_config.cloud_backup() {
+            CloudBackup::Enabled { wallet_count: Some(count), .. } => Some(count),
+            CloudBackup::Enabled { wallet_count: None, last_sync } => {
+                // backfill for DBs that predate the wallet_count field
+                let count = count_all_wallets(&db);
+                let _ = db.global_config.set_cloud_backup(&CloudBackup::Enabled {
+                    last_sync,
+                    wallet_count: Some(count),
+                });
+                Some(count)
+            }
+            CloudBackup::Disabled => None,
+        }
+    }
+
     /// Read persisted cloud backup state from DB and update in-memory state
     ///
     /// Called after bootstrap completes so the UI reflects the correct state
@@ -153,6 +209,192 @@ impl RustCloudBackupManager {
                 self.send(Message::StateChanged(new_state));
             }
         }
+    }
+
+    /// Cloud backup detail for the detail screen
+    ///
+    /// Returns None if cloud backup is disabled. Compares cached wallet list
+    /// against current local wallets to determine backup status
+    pub fn cloud_backup_detail(&self) -> Option<CloudBackupDetail> {
+        let db = Database::global();
+        let cloud_backup = db.global_config.cloud_backup();
+
+        let last_sync = match cloud_backup {
+            CloudBackup::Enabled { last_sync, .. } => last_sync,
+            CloudBackup::Disabled => return None,
+        };
+
+        let mut cached_wallets = db.global_config.cloud_backup_wallets();
+
+        // backfill for users who enabled backup before this feature
+        if cached_wallets.is_empty() {
+            cached_wallets = collect_all_wallet_summaries(&db);
+            let _ = db.global_config.set_cloud_backup_wallets(&cached_wallets);
+        }
+
+        let local_wallets = all_local_wallets(&db);
+        let local_wallet_ids: std::collections::HashSet<_> =
+            local_wallets.iter().map(|w| &w.id).collect();
+
+        let mut backed_up = Vec::new();
+        let mut deleted_from_device = Vec::new();
+
+        for cached in &cached_wallets {
+            let item = CloudBackupWalletItem {
+                name: cached.name.clone(),
+                network: cached.network,
+                wallet_mode: cached.wallet_mode,
+                wallet_type: cached.wallet_type,
+                fingerprint: cached.fingerprint.clone(),
+                status: if local_wallet_ids.contains(&cached.id) {
+                    CloudBackupWalletStatus::BackedUp
+                } else {
+                    CloudBackupWalletStatus::DeletedFromDevice
+                },
+            };
+
+            match item.status {
+                CloudBackupWalletStatus::BackedUp => backed_up.push(item),
+                CloudBackupWalletStatus::DeletedFromDevice => deleted_from_device.push(item),
+                _ => {}
+            }
+        }
+
+        let cached_ids: std::collections::HashSet<_> =
+            cached_wallets.iter().map(|w| &w.id).collect();
+
+        let not_backed_up: Vec<_> = local_wallets
+            .iter()
+            .filter(|w| !cached_ids.contains(&w.id))
+            .map(|w| CloudBackupWalletItem {
+                name: w.name.clone(),
+                network: w.network,
+                wallet_mode: w.wallet_mode,
+                wallet_type: w.wallet_type,
+                fingerprint: w.master_fingerprint.as_ref().map(|fp| fp.as_uppercase()),
+                status: CloudBackupWalletStatus::NotBackedUp,
+            })
+            .collect();
+
+        Some(CloudBackupDetail { last_sync, backed_up, not_backed_up, deleted_from_device })
+    }
+
+    /// Rebuild cloud backup detail using the manifest as source of truth
+    ///
+    /// Downloads the manifest from CloudKit, reconciles the local cache,
+    /// and returns accurate backup status. Returns None if disabled or on error
+    pub fn refresh_cloud_backup_detail(&self) -> Option<CloudBackupDetail> {
+        if !matches!(*self.state.read(), CloudBackupState::Enabled) {
+            return None;
+        }
+
+        let db = Database::global();
+        let last_sync = match db.global_config.cloud_backup() {
+            CloudBackup::Enabled { last_sync, .. } => last_sync,
+            CloudBackup::Disabled => return None,
+        };
+
+        let cloud = CloudStorage::global();
+        let manifest_json = cloud.download_manifest().ok()?;
+        let manifest: BackupManifest = serde_json::from_slice(&manifest_json).ok()?;
+
+        let cloud_record_ids: std::collections::HashSet<_> =
+            manifest.wallet_record_ids.iter().cloned().collect();
+
+        let local_wallets = all_local_wallets(&db);
+
+        let mut backed_up = Vec::new();
+        let mut not_backed_up = Vec::new();
+
+        for w in &local_wallets {
+            let record_id = wallet_record_id(w.id.as_ref());
+            let item = CloudBackupWalletItem {
+                name: w.name.clone(),
+                network: w.network,
+                wallet_mode: w.wallet_mode,
+                wallet_type: w.wallet_type,
+                fingerprint: w.master_fingerprint.as_ref().map(|fp| fp.as_uppercase()),
+                status: if cloud_record_ids.contains(&record_id) {
+                    CloudBackupWalletStatus::BackedUp
+                } else {
+                    CloudBackupWalletStatus::NotBackedUp
+                },
+            };
+
+            match item.status {
+                CloudBackupWalletStatus::BackedUp => backed_up.push(item),
+                _ => not_backed_up.push(item),
+            }
+        }
+
+        // wallets in cloud but not on device
+        let local_record_ids: std::collections::HashSet<_> =
+            local_wallets.iter().map(|w| wallet_record_id(w.id.as_ref())).collect();
+
+        let cached_wallets = db.global_config.cloud_backup_wallets();
+        let deleted_from_device: Vec<_> = cached_wallets
+            .iter()
+            .filter(|w| {
+                let rid = wallet_record_id(w.id.as_ref());
+                cloud_record_ids.contains(&rid) && !local_record_ids.contains(&rid)
+            })
+            .map(|w| CloudBackupWalletItem {
+                name: w.name.clone(),
+                network: w.network,
+                wallet_mode: w.wallet_mode,
+                wallet_type: w.wallet_type,
+                fingerprint: w.fingerprint.clone(),
+                status: CloudBackupWalletStatus::DeletedFromDevice,
+            })
+            .collect();
+
+        // reconcile local cache with what's actually in the cloud
+        let mut reconciled: Vec<_> = local_wallets
+            .iter()
+            .filter(|w| cloud_record_ids.contains(&wallet_record_id(w.id.as_ref())))
+            .map(|w| CloudBackedUpWallet {
+                id: w.id.clone(),
+                name: w.name.clone(),
+                network: w.network,
+                wallet_mode: w.wallet_mode,
+                wallet_type: w.wallet_type,
+                fingerprint: w.master_fingerprint.as_ref().map(|fp| fp.as_uppercase()),
+            })
+            .collect();
+
+        // keep deleted-from-device entries in cache so they still show
+        for w in &cached_wallets {
+            let rid = wallet_record_id(w.id.as_ref());
+            if cloud_record_ids.contains(&rid) && !local_record_ids.contains(&rid) {
+                reconciled.push(w.clone());
+            }
+        }
+
+        let _ = db.global_config.set_cloud_backup_wallets(&reconciled);
+
+        Some(CloudBackupDetail { last_sync, backed_up, not_backed_up, deleted_from_device })
+    }
+
+    /// Sync any local wallets that aren't in the cloud backup yet
+    ///
+    /// Called from the iOS sync button on the detail screen
+    pub fn sync_unsynced_wallets(&self) {
+        if !matches!(*self.state.read(), CloudBackupState::Enabled) {
+            return;
+        }
+
+        self.send(Message::StateChanged(CloudBackupState::Enabling));
+
+        let this = CLOUD_BACKUP_MANAGER.clone();
+        cove_tokio::task::spawn_blocking(move || match this.do_sync_unsynced_wallets() {
+            Ok(()) => {
+                this.send(Message::StateChanged(CloudBackupState::Enabled));
+            }
+            Err(e) => {
+                error!("Cloud backup sync failed: {e}");
+                this.send(Message::StateChanged(CloudBackupState::Error(e.to_string())));
+            }
+        });
     }
 
     /// Enable cloud backup — idempotent, safe to retry
@@ -200,6 +442,114 @@ impl RustCloudBackupManager {
 }
 
 impl RustCloudBackupManager {
+    /// Back up a newly created wallet, fire-and-forget
+    ///
+    /// Returns immediately if cloud backup isn't enabled (e.g. during restore)
+    pub fn backup_new_wallet(&self, metadata: crate::wallet::metadata::WalletMetadata) {
+        if !matches!(*self.state.read(), CloudBackupState::Enabled) {
+            return;
+        }
+
+        let this = CLOUD_BACKUP_MANAGER.clone();
+        cove_tokio::task::spawn_blocking(move || {
+            if let Err(e) = this.do_backup_wallets(&[metadata]) {
+                error!("Failed to backup new wallet: {e}");
+            }
+        });
+    }
+
+    /// Upload wallets to cloud and update manifest + local cache
+    fn do_backup_wallets(
+        &self,
+        wallets: &[crate::wallet::metadata::WalletMetadata],
+    ) -> Result<(), CloudBackupError> {
+        if wallets.is_empty() {
+            return Ok(());
+        }
+
+        let cspp = cove_cspp::Cspp::new(Keychain::global().clone());
+        let master_key = cspp
+            .get_or_create_master_key()
+            .map_err_prefix("master key", CloudBackupError::Internal)?;
+
+        let critical_key = Zeroizing::new(master_key.critical_data_key());
+        let cloud = CloudStorage::global();
+
+        let manifest_json = cloud.download_manifest().map_err_str(CloudBackupError::Cloud)?;
+        let mut manifest: BackupManifest =
+            serde_json::from_slice(&manifest_json).map_err_str(CloudBackupError::Internal)?;
+
+        let mut new_backed_up = Vec::new();
+
+        for metadata in wallets {
+            let entry = build_wallet_entry(metadata, metadata.wallet_mode)?;
+            let encrypted = wallet_crypto::encrypt_wallet_entry(&entry, &critical_key)
+                .map_err_str(CloudBackupError::Crypto)?;
+
+            let record_id = wallet_record_id(metadata.id.as_ref());
+            let wallet_json =
+                serde_json::to_vec(&encrypted).map_err_str(CloudBackupError::Internal)?;
+
+            cloud
+                .upload_wallet_backup(record_id.clone(), wallet_json)
+                .map_err_str(CloudBackupError::Cloud)?;
+
+            manifest.wallet_record_ids.push(record_id);
+
+            new_backed_up.push(CloudBackedUpWallet {
+                id: metadata.id.clone(),
+                name: metadata.name.clone(),
+                network: metadata.network,
+                wallet_mode: metadata.wallet_mode,
+                wallet_type: metadata.wallet_type,
+                fingerprint: metadata.master_fingerprint.as_ref().map(|fp| fp.as_uppercase()),
+            });
+        }
+
+        let manifest_json =
+            serde_json::to_vec(&manifest).map_err_str(CloudBackupError::Internal)?;
+        cloud.upload_manifest(manifest_json).map_err_str(CloudBackupError::Cloud)?;
+
+        let wallet_count = manifest.wallet_record_ids.len() as u32;
+        let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
+        let db = Database::global();
+        db.global_config
+            .set_cloud_backup(&CloudBackup::Enabled {
+                last_sync: Some(now),
+                wallet_count: Some(wallet_count),
+            })
+            .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)?;
+
+        let mut cached = db.global_config.cloud_backup_wallets();
+        cached.extend(new_backed_up);
+        let _ = db.global_config.set_cloud_backup_wallets(&cached);
+
+        info!("Backed up {} wallet(s) to cloud", wallets.len());
+        Ok(())
+    }
+
+    fn do_sync_unsynced_wallets(&self) -> Result<(), CloudBackupError> {
+        let cloud = CloudStorage::global();
+        let manifest_json = cloud.download_manifest().map_err_str(CloudBackupError::Cloud)?;
+        let manifest: BackupManifest =
+            serde_json::from_slice(&manifest_json).map_err_str(CloudBackupError::Internal)?;
+
+        let cloud_record_ids: std::collections::HashSet<_> =
+            manifest.wallet_record_ids.iter().collect();
+
+        let db = Database::global();
+        let unsynced: Vec<_> = all_local_wallets(&db)
+            .into_iter()
+            .filter(|w| !cloud_record_ids.contains(&wallet_record_id(w.id.as_ref())))
+            .collect();
+
+        if unsynced.is_empty() {
+            return Ok(());
+        }
+
+        self.do_backup_wallets(&unsynced)
+    }
+
     fn do_enable_cloud_backup(&self) -> Result<(), CloudBackupError> {
         self.send(Message::StateChanged(CloudBackupState::Enabling));
 
@@ -233,29 +583,32 @@ impl RustCloudBackupManager {
         // enumerate and encrypt all wallets
         let critical_key = Zeroizing::new(master_key.critical_data_key());
         let mut wallet_record_ids = Vec::new();
+        let mut backed_up_wallets = Vec::new();
         let db = Database::global();
 
-        for network in Network::iter() {
-            for mode in crate::wallet::metadata::WalletMode::iter() {
-                let wallets =
-                    db.wallets.get_all(network, mode).map_err_str(CloudBackupError::Internal)?;
+        for metadata in all_local_wallets(&db) {
+            let entry = build_wallet_entry(&metadata, metadata.wallet_mode)?;
+            let encrypted = wallet_crypto::encrypt_wallet_entry(&entry, &critical_key)
+                .map_err_str(CloudBackupError::Crypto)?;
 
-                for metadata in wallets {
-                    let entry = build_wallet_entry(&metadata, mode)?;
-                    let encrypted = wallet_crypto::encrypt_wallet_entry(&entry, &critical_key)
-                        .map_err_str(CloudBackupError::Crypto)?;
+            let record_id = wallet_record_id(metadata.id.as_ref());
+            let wallet_json =
+                serde_json::to_vec(&encrypted).map_err_str(CloudBackupError::Internal)?;
 
-                    let record_id = wallet_record_id(metadata.id.as_ref());
-                    let wallet_json =
-                        serde_json::to_vec(&encrypted).map_err_str(CloudBackupError::Internal)?;
+            cloud
+                .upload_wallet_backup(record_id.clone(), wallet_json)
+                .map_err_str(CloudBackupError::Cloud)?;
 
-                    cloud
-                        .upload_wallet_backup(record_id.clone(), wallet_json)
-                        .map_err_str(CloudBackupError::Cloud)?;
+            wallet_record_ids.push(record_id);
 
-                    wallet_record_ids.push(record_id);
-                }
-            }
+            backed_up_wallets.push(CloudBackedUpWallet {
+                id: metadata.id.clone(),
+                name: metadata.name.clone(),
+                network: metadata.network,
+                wallet_mode: metadata.wallet_mode,
+                wallet_type: metadata.wallet_type,
+                fingerprint: metadata.master_fingerprint.as_ref().map(|fp| fp.as_uppercase()),
+            });
         }
 
         // upload manifest last as commit marker
@@ -271,10 +624,17 @@ impl RustCloudBackupManager {
         cloud.upload_manifest(manifest_json).map_err_str(CloudBackupError::Cloud)?;
 
         // mark enabled only after manifest succeeds
+        let wallet_count = manifest.wallet_record_ids.len() as u32;
         let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
         db.global_config
-            .set_cloud_backup(&CloudBackup::Enabled { last_sync: Some(now) })
+            .set_cloud_backup(&CloudBackup::Enabled {
+                last_sync: Some(now),
+                wallet_count: Some(wallet_count),
+            })
             .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)?;
+
+        // persist wallet summaries for the detail screen
+        let _ = db.global_config.set_cloud_backup_wallets(&backed_up_wallets);
 
         self.send(Message::EnableComplete);
         self.send(Message::StateChanged(CloudBackupState::Enabled));
@@ -383,11 +743,19 @@ impl RustCloudBackupManager {
         }
 
         // mark enabled
+        let wallet_count = report.wallets_restored;
         let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
         let db = Database::global();
         db.global_config
-            .set_cloud_backup(&CloudBackup::Enabled { last_sync: Some(now) })
+            .set_cloud_backup(&CloudBackup::Enabled {
+                last_sync: Some(now),
+                wallet_count: Some(wallet_count),
+            })
             .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)?;
+
+        // persist wallet summaries for the detail screen
+        let restored_wallets = collect_all_wallet_summaries(&db);
+        let _ = db.global_config.set_cloud_backup_wallets(&restored_wallets);
 
         self.send(Message::RestoreComplete(report));
         self.send(Message::StateChanged(CloudBackupState::Enabled));
@@ -397,6 +765,34 @@ impl RustCloudBackupManager {
     }
 }
 
+/// All local wallets across every network and mode
+fn all_local_wallets(db: &Database) -> Vec<WalletMetadata> {
+    Network::iter()
+        .flat_map(|network| {
+            LocalWalletMode::iter()
+                .flat_map(move |mode| db.wallets.get_all(network, mode).unwrap_or_default())
+        })
+        .collect()
+}
+
+fn count_all_wallets(db: &Database) -> u32 {
+    all_local_wallets(db).len() as u32
+}
+
+fn collect_all_wallet_summaries(db: &Database) -> Vec<CloudBackedUpWallet> {
+    all_local_wallets(db)
+        .iter()
+        .map(|w| CloudBackedUpWallet {
+            id: w.id.clone(),
+            name: w.name.clone(),
+            network: w.network,
+            wallet_mode: w.wallet_mode,
+            wallet_type: w.wallet_type,
+            fingerprint: w.master_fingerprint.as_ref().map(|fp| fp.as_uppercase()),
+        })
+        .collect()
+}
+
 fn restore_single_wallet(
     cloud: &CloudStorage,
     record_id: &str,
@@ -404,7 +800,7 @@ fn restore_single_wallet(
     existing_fingerprints: &mut Vec<(
         crate::wallet::fingerprint::Fingerprint,
         Network,
-        crate::wallet::metadata::WalletMode,
+        LocalWalletMode,
     )>,
 ) -> Result<(), CloudBackupError> {
     let wallet_json = cloud
@@ -540,7 +936,7 @@ fn convert_cloud_secret(
 
 fn build_wallet_entry(
     metadata: &crate::wallet::metadata::WalletMetadata,
-    mode: crate::wallet::metadata::WalletMode,
+    mode: LocalWalletMode,
 ) -> Result<WalletEntry, CloudBackupError> {
     let keychain = Keychain::global();
     let id = &metadata.id;
@@ -610,8 +1006,8 @@ fn build_wallet_entry(
         .map_err_prefix("serialize metadata", CloudBackupError::Internal)?;
 
     let wallet_mode = match mode {
-        crate::wallet::metadata::WalletMode::Main => WalletMode::Main,
-        crate::wallet::metadata::WalletMode::Decoy => WalletMode::Decoy,
+        LocalWalletMode::Main => WalletMode::Main,
+        LocalWalletMode::Decoy => WalletMode::Decoy,
     };
 
     Ok(WalletEntry {
@@ -631,6 +1027,9 @@ fn build_wallet_entry(
 #[uniffi::export]
 pub fn wipe_local_data() {
     use crate::database::migration::log_remove_file;
+
+    // best-effort: delete keychain secrets before removing DB files
+    delete_all_wallet_keychain_items();
 
     let root = &*cove_common::consts::ROOT_DATA_DIR;
 
@@ -674,6 +1073,23 @@ pub fn cspp_master_key_record_id() -> String {
 #[uniffi::export]
 pub fn cspp_manifest_record_id() -> String {
     MANIFEST_RECORD_ID.to_string()
+}
+
+/// Delete keychain items for all wallets across all networks and modes
+///
+/// Best-effort: if the database isn't initialized (e.g. key mismatch), skip
+fn delete_all_wallet_keychain_items() {
+    let Some(db_swap) = crate::database::DATABASE.get() else {
+        warn!("Database not initialized, skipping keychain cleanup during wipe");
+        return;
+    };
+
+    let db = db_swap.load();
+    let keychain = Keychain::global();
+
+    for wallet in all_local_wallets(&db) {
+        keychain.delete_wallet_items(&wallet.id);
+    }
 }
 
 #[cfg(test)]

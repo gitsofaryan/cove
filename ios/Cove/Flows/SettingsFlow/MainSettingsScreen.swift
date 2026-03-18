@@ -277,6 +277,15 @@ struct MainSettingsScreen: View {
                         Image(systemName: "checkmark.icloud")
                             .foregroundStyle(.green)
                         Text("Cloud Backup Enabled")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundColor(Color(UIColor.tertiaryLabel))
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        app.pushRoute(Route.settings(.cloudBackup))
                     }
                 case .restoring:
                     HStack {

@@ -76,6 +76,7 @@ pub enum SettingsRoute {
 
     AllWallets,
     About,
+    CloudBackup,
 }
 
 #[derive(Debug, Clone, Default, Hash, From, Eq, PartialEq, uniffi::Enum)]

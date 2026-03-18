@@ -67,6 +67,10 @@ struct SettingsContainer: View {
                 SettingsListAllWallets()
             case .about:
                 AboutScreen()
+            case .cloudBackup:
+                if let detail = CloudBackupManager.shared.rust.cloudBackupDetail() {
+                    CloudBackupDetailScreen(detail: detail)
+                }
             }
         }
         .navigationBarTitleDisplayMode(.inline)

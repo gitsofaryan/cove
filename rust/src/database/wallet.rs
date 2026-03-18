@@ -12,6 +12,7 @@ use crate::{
 };
 
 use super::{Database, Error};
+use crate::manager::cloud_backup_manager::CLOUD_BACKUP_MANAGER;
 use cove_types::WalletId;
 use cove_types::redb::Json;
 
@@ -262,10 +263,12 @@ impl WalletsTable {
             return Err(WalletTableError::WalletAlreadyExists.into());
         }
 
+        let wallet_for_backup = wallet.clone();
         wallets.push(wallet);
         self.save_all_wallets(network, mode, wallets)?;
 
         Updater::send_update(Update::WalletsChanged);
+        CLOUD_BACKUP_MANAGER.backup_new_wallet(wallet_for_backup);
 
         Ok(())
     }
