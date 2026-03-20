@@ -30,6 +30,11 @@ pub enum CloudBackup {
         #[serde(default)]
         wallet_count: Option<u32>,
     },
+    Unverified {
+        last_sync: Option<u64>,
+        #[serde(default)]
+        wallet_count: Option<u32>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]

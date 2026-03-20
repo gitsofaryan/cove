@@ -86,6 +86,20 @@ impl<S: CsppStore> Cspp<S> {
         Ok(())
     }
 
+    /// Loads the master key directly from the store, bypassing the in-memory cache
+    ///
+    /// Used by verification to detect keychain corruption even if the cache
+    /// was populated earlier in the session
+    pub fn load_master_key_from_store(&self) -> Result<Option<MasterKey>, CsppError> {
+        self.get_master_key()
+    }
+
+    /// Checks whether the master key exists in the store without decrypting it
+    pub fn has_master_key(&self) -> bool {
+        self.0.get(MASTER_KEY_NAME.into()).is_some()
+            && self.0.get(MASTER_KEY_ENCRYPTION_KEY_AND_NONCE.into()).is_some()
+    }
+
     /// Loads the master key, returns None if not found
     fn get_master_key(&self) -> Result<Option<MasterKey>, CsppError> {
         let has_encryption_key = self.0.get(MASTER_KEY_ENCRYPTION_KEY_AND_NONCE.into());

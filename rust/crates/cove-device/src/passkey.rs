@@ -63,6 +63,13 @@ pub trait PasskeyProvider: Send + Sync + std::fmt::Debug + 'static {
     ) -> Result<DiscoveredPasskeyResult, PasskeyError>;
 
     fn is_prf_supported(&self) -> bool;
+
+    /// Non-interactive check whether a passkey credential exists on the device
+    ///
+    /// Uses preferImmediatelyAvailableCredentials to silently detect absence
+    /// (returns false with no UI). If the passkey exists, cancels before Face ID
+    /// appears and returns true
+    fn check_passkey_exists(&self, rp_id: String, credential_id: Vec<u8>) -> bool;
 }
 
 static REF: OnceCell<PasskeyAccess> = OnceCell::new();
@@ -123,5 +130,9 @@ impl PasskeyAccess {
         challenge: Vec<u8>,
     ) -> Result<DiscoveredPasskeyResult, PasskeyError> {
         self.0.discover_and_authenticate_with_prf(rp_id, prf_salt, challenge)
+    }
+
+    pub fn check_passkey_exists(&self, rp_id: String, credential_id: Vec<u8>) -> bool {
+        self.0.check_passkey_exists(rp_id, credential_id)
     }
 }

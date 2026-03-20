@@ -28,6 +28,14 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
         try download(recordId: recordId)
     }
 
+    func deleteWalletBackup(recordId: String) throws {
+        let url = try helper.fileURL(for: recordId)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw CloudStorageError.NotFound(recordId)
+        }
+        try helper.coordinatedDelete(at: url)
+    }
+
     /// Downloads the manifest with authoritative NotFound semantics
     ///
     /// Uses NSMetadataQuery to confirm the file truly doesn't exist in iCloud

@@ -7,7 +7,7 @@ final class ICloudDriveHelper: @unchecked Sendable {
 
     private let containerIdentifier = "iCloud.com.covebitcoinwallet"
     private let dataSubdirectory = "Data"
-    private let defaultTimeout: TimeInterval = 10
+    private let defaultTimeout: TimeInterval = 60
     private let pollInterval: TimeInterval = 0.1
 
     // MARK: - Path mapping
@@ -58,6 +58,26 @@ final class ICloudDriveHelper: @unchecked Sendable {
 
         if let error = coordinatorError ?? writeError {
             throw CloudStorageError.UploadFailed("write failed: \(error.localizedDescription)")
+        }
+    }
+
+    func coordinatedDelete(at url: URL) throws {
+        var coordinatorError: NSError?
+        var deleteError: Error?
+
+        let coordinator = NSFileCoordinator()
+        coordinator.coordinate(
+            writingItemAt: url, options: .forDeleting, error: &coordinatorError
+        ) { newURL in
+            do {
+                try FileManager.default.removeItem(at: newURL)
+            } catch {
+                deleteError = error
+            }
+        }
+
+        if let error = coordinatorError ?? deleteError {
+            throw CloudStorageError.UploadFailed("delete failed: \(error.localizedDescription)")
         }
     }
 

@@ -130,7 +130,7 @@ struct CoveApp: App {
                 )
             }
             .alert(
-                "Cloud Backup Check Failed",
+                "Cloud Backup Check",
                 isPresented: Binding(
                     get: { cloudCheckError != nil },
                     set: { if !$0 { cloudCheckError = nil } }
@@ -138,9 +138,7 @@ struct CoveApp: App {
             ) {
                 Button("OK") { cloudCheckError = nil }
             } message: {
-                Text(
-                    "Could not check iCloud for existing backups. If you previously had wallets backed up, please check your network connection and restart the app"
-                )
+                Text(cloudCheckError ?? "")
             }
         }
     }
@@ -286,6 +284,7 @@ extension CoveApp {
         self.startupState = .ready(appManager, AuthManager.shared)
         self.bdkMigrationWarning = warning
         startInitData(appManager)
+        startBackupIntegrityCheck()
     }
 
     /// Re-bootstrap after recovery (Start Fresh / Wipe / Cloud Restore)
@@ -306,6 +305,21 @@ extension CoveApp {
         Task {
             await appManager.rust.initData()
             Log.info("[STARTUP] initData completed")
+        }
+    }
+
+    /// Background check that cloud backup files and keychain master key are intact
+    private func startBackupIntegrityCheck() {
+        guard FileManager.default.ubiquityIdentityToken != nil else { return }
+
+        Task.detached {
+            let warning = CloudBackupManager.shared.rust.verifyBackupIntegrity()
+            if let warning {
+                Log.error("[STARTUP] backup integrity warning: \(warning)")
+                await MainActor.run {
+                    self.cloudCheckError = warning
+                }
+            }
         }
     }
 }

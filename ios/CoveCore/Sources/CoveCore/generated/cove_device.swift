@@ -1419,6 +1419,8 @@ public protocol CloudStorageAccess: AnyObject, Sendable {
     
     func downloadWalletBackup(recordId: String) throws  -> Data
     
+    func deleteWalletBackup(recordId: String) throws 
+    
     func uploadManifest(data: Data) throws 
     
     func downloadManifest() throws  -> Data
@@ -1550,6 +1552,31 @@ fileprivate struct UniffiCallbackInterfaceCloudStorageAccess {
 
             
             let writeReturn = { uniffiOutReturn.pointee = FfiConverterData.lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeCloudStorageError_lower
+            )
+        },
+        deleteWalletBackup: { (
+            uniffiHandle: UInt64,
+            recordId: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceCloudStorageAccess.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.deleteWalletBackup(
+                     recordId: try FfiConverterString.lift(recordId)
+                )
+            }
+
+            
+            let writeReturn = { () }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -2051,6 +2078,15 @@ public protocol PasskeyProvider: AnyObject, Sendable {
     
     func isPrfSupported()  -> Bool
     
+    /**
+     * Non-interactive check whether a passkey credential exists on the device
+     *
+     * Uses preferImmediatelyAvailableCredentials to silently detect absence
+     * (returns false with no UI). If the passkey exists, cancels before Face ID
+     * appears and returns true
+     */
+    func checkPasskeyExists(rpId: String, credentialId: Data)  -> Bool
+    
 }
 
 
@@ -2176,6 +2212,32 @@ fileprivate struct UniffiCallbackInterfacePasskeyProvider {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.isPrfSupported(
+                )
+            }
+
+            
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        checkPasskeyExists: { (
+            uniffiHandle: UInt64,
+            rpId: RustBuffer,
+            credentialId: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<Int8>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> Bool in
+                guard let uniffiObj = try? FfiConverterCallbackInterfacePasskeyProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.checkPasskeyExists(
+                     rpId: try FfiConverterString.lift(rpId),
+                     credentialId: try FfiConverterData.lift(credentialId)
                 )
             }
 
@@ -2328,13 +2390,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_device_checksum_method_cloudstorageaccess_download_wallet_backup() != 32044) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_device_checksum_method_cloudstorageaccess_upload_manifest() != 14368) {
+    if (uniffi_cove_device_checksum_method_cloudstorageaccess_delete_wallet_backup() != 27682) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_device_checksum_method_cloudstorageaccess_download_manifest() != 64118) {
+    if (uniffi_cove_device_checksum_method_cloudstorageaccess_upload_manifest() != 62435) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_device_checksum_method_cloudstorageaccess_has_cloud_backup() != 10128) {
+    if (uniffi_cove_device_checksum_method_cloudstorageaccess_download_manifest() != 45872) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_device_checksum_method_cloudstorageaccess_has_cloud_backup() != 24668) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_device_checksum_method_deviceaccess_timezone() != 54194) {
@@ -2359,6 +2424,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_device_checksum_method_passkeyprovider_is_prf_supported() != 18036) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_device_checksum_method_passkeyprovider_check_passkey_exists() != 37517) {
         return InitializationResult.apiChecksumMismatch
     }
 

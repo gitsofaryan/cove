@@ -33,6 +33,7 @@ pub trait CloudStorageAccess: Send + Sync + std::fmt::Debug + 'static {
 
     fn download_master_key_backup(&self) -> Result<Vec<u8>, CloudStorageError>;
     fn download_wallet_backup(&self, record_id: String) -> Result<Vec<u8>, CloudStorageError>;
+    fn delete_wallet_backup(&self, record_id: String) -> Result<(), CloudStorageError>;
 
     fn upload_manifest(&self, data: Vec<u8>) -> Result<(), CloudStorageError>;
     fn download_manifest(&self) -> Result<Vec<u8>, CloudStorageError>;
@@ -91,6 +92,10 @@ impl CloudStorage {
 
     pub fn download_wallet_backup(&self, record_id: String) -> Result<Vec<u8>, CloudStorageError> {
         self.0.download_wallet_backup(record_id)
+    }
+
+    pub fn delete_wallet_backup(&self, record_id: String) -> Result<(), CloudStorageError> {
+        self.0.delete_wallet_backup(record_id)
     }
 
     pub fn upload_manifest(&self, data: Vec<u8>) -> Result<(), CloudStorageError> {

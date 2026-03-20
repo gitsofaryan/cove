@@ -274,9 +274,15 @@ struct MainSettingsScreen: View {
                     }
                 case .enabled:
                     HStack {
-                        Image(systemName: "checkmark.icloud")
-                            .foregroundStyle(.green)
-                        Text("Cloud Backup Enabled")
+                        if manager.rust.isCloudBackupUnverified() {
+                            Image(systemName: "exclamationmark.icloud")
+                                .foregroundStyle(.orange)
+                            Text("Cloud Backup Unverified")
+                        } else {
+                            Image(systemName: "checkmark.icloud")
+                                .foregroundStyle(.green)
+                            Text("Cloud Backup Enabled")
+                        }
                         Spacer()
                         Image(systemName: "chevron.right")
                             .foregroundColor(Color(UIColor.tertiaryLabel))

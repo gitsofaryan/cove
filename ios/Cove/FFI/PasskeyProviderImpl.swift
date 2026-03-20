@@ -120,6 +120,50 @@ final class PasskeyProviderImpl: PasskeyProvider, @unchecked Sendable {
         return prfOutput.prefix(32)
     }
 
+    func checkPasskeyExists(rpId: String, credentialId: Data) -> Bool {
+        precondition(
+            !Thread.isMainThread,
+            "checkPasskeyExists must not be called from the main thread"
+        )
+
+        let delegate = PasskeyExistenceDelegate()
+        let controller: ASAuthorizationController
+
+        controller = DispatchQueue.main.sync {
+            let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(
+                relyingPartyIdentifier: rpId
+            )
+
+            let request = provider.createCredentialAssertionRequest(
+                challenge: Data(count: 32)
+            )
+
+            request.allowedCredentials = [
+                ASAuthorizationPlatformPublicKeyCredentialDescriptor(
+                    credentialID: credentialId
+                ),
+            ]
+
+            let ctrl = ASAuthorizationController(authorizationRequests: [request])
+            ctrl.delegate = delegate
+            ctrl.presentationContextProvider = delegate
+            ctrl.performRequests(options: .preferImmediatelyAvailableCredentials)
+            return ctrl
+        }
+
+        // .notInteractive returns almost instantly when no credential exists
+        // if nothing comes back quickly, the credential exists and Face ID
+        // is being prepared — cancel before it appears
+        let gotResult = delegate.semaphore.wait(timeout: .now() + 0.3)
+
+        if gotResult == .timedOut {
+            DispatchQueue.main.async { controller.cancel() }
+            return true
+        }
+
+        return delegate.credentialExists
+    }
+
     func discoverAndAuthenticateWithPrf(
         rpId: String, prfSalt: Data, challenge: Data
     ) throws -> DiscoveredPasskeyResult {
@@ -233,6 +277,49 @@ private class PasskeyDelegate: NSObject, ASAuthorizationControllerDelegate,
             result = .failure(
                 PasskeyError.AuthenticationFailed(error.localizedDescription)
             )
+        }
+        semaphore.signal()
+    }
+}
+
+// MARK: - PasskeyExistenceDelegate
+
+/// Lightweight delegate for non-interactive passkey existence checks
+///
+/// Only cares about whether the credential exists, not the actual assertion.
+/// `.notInteractive` (code 1005) means no matching credential — no UI was shown
+private class PasskeyExistenceDelegate: NSObject, ASAuthorizationControllerDelegate,
+    ASAuthorizationControllerPresentationContextProviding
+{
+    let semaphore = DispatchSemaphore(value: 0)
+    var credentialExists = false
+
+    func presentationAnchor(for _: ASAuthorizationController) -> ASPresentationAnchor {
+        let scenes = UIApplication.shared.connectedScenes
+        let windowScene = scenes.first as? UIWindowScene
+        return windowScene?.keyWindow ?? ASPresentationAnchor()
+    }
+
+    func authorizationController(
+        controller _: ASAuthorizationController,
+        didCompleteWithAuthorization _: ASAuthorization
+    ) {
+        credentialExists = true
+        semaphore.signal()
+    }
+
+    func authorizationController(
+        controller _: ASAuthorizationController,
+        didCompleteWithError error: Error
+    ) {
+        if let authError = error as? ASAuthorizationError,
+           authError.code == .notInteractive
+        {
+            // no matching credential on device — silent, no UI was shown
+            credentialExists = false
+        } else {
+            // .canceled or other error — credential likely exists
+            credentialExists = true
         }
         semaphore.signal()
     }

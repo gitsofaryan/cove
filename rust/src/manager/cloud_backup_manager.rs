@@ -74,6 +74,8 @@ pub struct CloudBackupWalletItem {
     pub wallet_type: WalletType,
     pub fingerprint: Option<String>,
     pub status: CloudBackupWalletStatus,
+    /// Cloud record ID, only set for cloud-only wallets
+    pub record_id: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -89,6 +91,42 @@ pub struct CloudBackupDetail {
     pub not_backed_up: Vec<CloudBackupWalletItem>,
     /// Number of wallets in the cloud that aren't on this device
     pub cloud_only_count: u32,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum DeepVerificationResult {
+    Verified(DeepVerificationReport),
+    UserCancelled(Option<CloudBackupDetail>),
+    NotEnabled,
+    Failed(DeepVerificationFailure),
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DeepVerificationReport {
+    /// Cloud master key PRF wrapping was repaired
+    pub master_key_wrapper_repaired: bool,
+    /// Local keychain was repaired from verified cloud master key
+    pub local_master_key_repaired: bool,
+    /// credential_id was recovered via discoverable auth
+    pub credential_recovered: bool,
+    pub wallets_verified: u32,
+    pub wallets_failed: u32,
+    /// Wallet backups with unsupported version (newer format, skipped)
+    pub wallets_unsupported: u32,
+    /// May be None if manifest was missing but master key verified
+    pub detail: Option<CloudBackupDetail>,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum DeepVerificationFailure {
+    /// Transient iCloud/network/passkey error — safe to retry
+    Retry { message: String, detail: Option<CloudBackupDetail> },
+    /// Manifest missing, master key verified intact — recreate from local wallets
+    RecreateManifest { message: String, detail: Option<CloudBackupDetail>, warning: String },
+    /// No verified cloud or local master key available — full re-enable needed
+    ReinitializeBackup { message: String, detail: Option<CloudBackupDetail>, warning: String },
+    /// Backup uses a newer format — do not overwrite
+    UnsupportedVersion { message: String, detail: Option<CloudBackupDetail> },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -170,8 +208,10 @@ impl RustCloudBackupManager {
     pub fn backup_wallet_count(&self) -> Option<u32> {
         let db = Database::global();
         match db.global_config.cloud_backup() {
-            CloudBackup::Enabled { wallet_count: Some(count), .. } => Some(count),
-            CloudBackup::Enabled { wallet_count: None, last_sync } => {
+            CloudBackup::Enabled { wallet_count: Some(count), .. }
+            | CloudBackup::Unverified { wallet_count: Some(count), .. } => Some(count),
+            CloudBackup::Enabled { wallet_count: None, last_sync }
+            | CloudBackup::Unverified { wallet_count: None, last_sync } => {
                 // backfill for DBs that predate the wallet_count field
                 let count = count_all_wallets(&db);
                 let _ = db.global_config.set_cloud_backup(&CloudBackup::Enabled {
@@ -194,7 +234,9 @@ impl RustCloudBackupManager {
 
         if matches!(*state, CloudBackupState::Disabled) {
             let new_state = match db_state {
-                CloudBackup::Enabled { .. } => CloudBackupState::Enabled,
+                CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. } => {
+                    CloudBackupState::Enabled
+                }
                 CloudBackup::Disabled => CloudBackupState::Disabled,
             };
 
@@ -213,7 +255,10 @@ impl RustCloudBackupManager {
     /// Check if cloud backup is enabled, used as nav guard
     pub fn is_cloud_backup_enabled(&self) -> bool {
         let db = Database::global();
-        matches!(db.global_config.cloud_backup(), CloudBackup::Enabled { .. })
+        matches!(
+            db.global_config.cloud_backup(),
+            CloudBackup::Enabled { .. } | CloudBackup::Unverified { .. }
+        )
     }
 
     /// Download the cloud manifest and build detail from it as source of truth
@@ -252,54 +297,7 @@ impl RustCloudBackupManager {
             }
         };
 
-        let db = Database::global();
-        let last_sync = match db.global_config.cloud_backup() {
-            CloudBackup::Enabled { last_sync, .. } => last_sync,
-            CloudBackup::Disabled => return None,
-        };
-
-        let cloud_record_ids: std::collections::HashSet<_> =
-            manifest.wallet_record_ids.iter().cloned().collect();
-
-        let local_wallets = all_local_wallets(&db);
-        let local_record_ids: std::collections::HashSet<_> =
-            local_wallets.iter().map(|w| wallet_record_id(w.id.as_ref())).collect();
-
-        let mut backed_up = Vec::new();
-        let mut not_backed_up = Vec::new();
-
-        for w in &local_wallets {
-            let record_id = wallet_record_id(w.id.as_ref());
-            let status = if cloud_record_ids.contains(&record_id) {
-                CloudBackupWalletStatus::BackedUp
-            } else {
-                CloudBackupWalletStatus::NotBackedUp
-            };
-
-            let item = CloudBackupWalletItem {
-                name: w.name.clone(),
-                network: w.network,
-                wallet_mode: w.wallet_mode,
-                wallet_type: w.wallet_type,
-                fingerprint: w.master_fingerprint.as_ref().map(|fp| fp.as_uppercase()),
-                status,
-            };
-
-            match item.status {
-                CloudBackupWalletStatus::BackedUp => backed_up.push(item),
-                _ => not_backed_up.push(item),
-            }
-        }
-
-        let cloud_only_count =
-            cloud_record_ids.iter().filter(|rid| !local_record_ids.contains(*rid)).count() as u32;
-
-        Some(CloudBackupDetailResult::Success(CloudBackupDetail {
-            last_sync,
-            backed_up,
-            not_backed_up,
-            cloud_only_count,
-        }))
+        Some(CloudBackupDetailResult::Success(build_detail_from_manifest(&manifest)))
     }
 
     /// Download and decrypt wallets that are in the cloud but not on this device
@@ -312,6 +310,20 @@ impl RustCloudBackupManager {
                 Vec::new()
             }
         }
+    }
+
+    /// Restore a single cloud-only wallet to this device
+    ///
+    /// Returns None on success, Some(error) on failure
+    pub fn restore_cloud_wallet(&self, record_id: String) -> Option<String> {
+        self.do_restore_cloud_wallet(&record_id).err().map(|e| e.to_string())
+    }
+
+    /// Delete a single wallet backup from iCloud and remove it from the manifest
+    ///
+    /// Returns None on success, Some(error) on failure
+    pub fn delete_cloud_wallet(&self, record_id: String) -> Option<String> {
+        self.do_delete_cloud_wallet(&record_id).err().map(|e| e.to_string())
     }
 
     /// Sync any local wallets that aren't in the cloud backup yet
@@ -334,12 +346,134 @@ impl RustCloudBackupManager {
         });
     }
 
+    /// Deep verification of cloud backup integrity
+    ///
+    /// Proves the passkey PRF can unwrap the cloud master key, proves the
+    /// master key can decrypt wallet backups, and auto-repairs recoverable
+    /// issues (PRF wrapper, local keychain)
+    pub fn deep_verify_cloud_backup(&self) -> DeepVerificationResult {
+        if !matches!(*self.state.read(), CloudBackupState::Enabled) {
+            return DeepVerificationResult::NotEnabled;
+        }
+
+        let result = match self.do_deep_verify_cloud_backup() {
+            Ok(result) => result,
+            Err(e) => {
+                error!("Deep verification unexpected error: {e}");
+                DeepVerificationResult::Failed(DeepVerificationFailure::Retry {
+                    message: e.to_string(),
+                    detail: None,
+                })
+            }
+        };
+
+        self.persist_verification_result(&result);
+        result
+    }
+
+    /// Whether the persisted cloud backup state is unverified
+    pub fn is_cloud_backup_unverified(&self) -> bool {
+        matches!(Database::global().global_config.cloud_backup(), CloudBackup::Unverified { .. })
+    }
+
+    /// Create a new passkey and re-wrap the local master key for cloud storage
+    ///
+    /// Recovery action for when the original passkey has been deleted. Proves the
+    /// local master key can decrypt at least one cloud wallet, then creates a new
+    /// passkey, re-encrypts the wrapper, and uploads it. Returns None on success,
+    /// Some(error) on failure
+    pub fn repair_passkey_wrapper(&self) -> Option<String> {
+        self.do_repair_passkey_wrapper().err().map(|e| e.to_string())
+    }
+
     /// Re-upload all local wallets and create a fresh manifest
     ///
     /// Called from the UI when the manifest can't be downloaded (e.g. container mismatch).
     /// Returns None on success, Some(error) on failure
     pub fn reupload_all_wallets(&self) -> Option<String> {
         self.do_reupload_all_wallets().err().map(|e| e.to_string())
+    }
+
+    /// Background startup health check for cloud backup integrity
+    ///
+    /// Verifies the master key is in the keychain and backup files exist in iCloud.
+    /// Returns None if everything is OK, Some(warning) if there's a problem
+    pub fn verify_backup_integrity(&self) -> Option<String> {
+        if !matches!(*self.state.read(), CloudBackupState::Enabled) {
+            return None;
+        }
+
+        let mut issues: Vec<&str> = Vec::new();
+
+        let keychain = Keychain::global();
+        let cspp = cove_cspp::Cspp::new(keychain.clone());
+        if !cspp.has_master_key() {
+            issues.push("master key not found in keychain");
+        }
+
+        if keychain.get(CREDENTIAL_ID_KEY.into()).is_none() {
+            issues
+                .push("passkey credential not found — open Cloud Backup in Settings to re-verify");
+        }
+        if keychain.get(PRF_SALT_KEY.into()).is_none() {
+            issues.push("passkey salt not found — open Cloud Backup in Settings to re-verify");
+        }
+
+        let cloud = CloudStorage::global();
+        match cloud.has_cloud_backup() {
+            Ok(true) => {}
+            Ok(false) => issues.push("backup files not found in iCloud"),
+            Err(e) => {
+                error!("Backup integrity: cloud check failed: {e}");
+                issues.push("could not verify iCloud files");
+            }
+        }
+
+        match cloud.download_master_key_backup() {
+            Ok(_) => {}
+            Err(CloudStorageError::NotFound(_)) => {
+                issues.push("master key backup not found in iCloud");
+            }
+            Err(e) => {
+                error!("Backup integrity: master key check failed: {e}");
+                issues.push("could not verify master key backup in iCloud");
+            }
+        }
+
+        // check for unsynced wallets and auto-sync if needed
+        if issues.is_empty() {
+            match cloud.download_manifest() {
+                Ok(json) => {
+                    if let Ok(manifest) = serde_json::from_slice::<BackupManifest>(&json) {
+                        let db = Database::global();
+                        let local_count = count_all_wallets(&db);
+                        let cloud_count = manifest.wallet_record_ids.len() as u32;
+
+                        if local_count > cloud_count {
+                            info!(
+                                "Backup integrity: {local_count} local wallets vs {cloud_count} in cloud, auto-syncing"
+                            );
+                            if let Err(e) = self.do_sync_unsynced_wallets() {
+                                error!("Backup integrity: auto-sync failed: {e}");
+                                issues.push("some wallets are not backed up");
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Backup integrity: manifest check failed: {e}");
+                }
+            }
+        }
+
+        if issues.is_empty() {
+            info!("Backup integrity check passed");
+            None
+        } else {
+            let msg = issues.join("; ");
+            error!("Backup integrity issues: {msg}");
+            Some(msg)
+        }
     }
 
     /// Enable cloud backup — idempotent, safe to retry
@@ -398,9 +532,464 @@ impl RustCloudBackupManager {
         let this = CLOUD_BACKUP_MANAGER.clone();
         cove_tokio::task::spawn_blocking(move || {
             if let Err(e) = this.do_backup_wallets(&[metadata]) {
-                error!("Failed to backup new wallet: {e}");
+                warn!("Failed to backup new wallet, retrying full sync: {e}");
+                if let Err(e) = this.do_sync_unsynced_wallets() {
+                    error!("Retry sync also failed: {e}");
+                    this.send(Message::SyncFailed(e.to_string()));
+                }
             }
         });
+    }
+
+    fn persist_verification_result(&self, result: &DeepVerificationResult) {
+        let db = Database::global();
+        let current = db.global_config.cloud_backup();
+
+        let (last_sync, wallet_count) = match &current {
+            CloudBackup::Enabled { last_sync, wallet_count }
+            | CloudBackup::Unverified { last_sync, wallet_count } => (*last_sync, *wallet_count),
+            CloudBackup::Disabled => return,
+        };
+
+        let new_state = match result {
+            DeepVerificationResult::Verified(_) => CloudBackup::Enabled { last_sync, wallet_count },
+            DeepVerificationResult::UserCancelled(_) | DeepVerificationResult::Failed(_) => {
+                CloudBackup::Unverified { last_sync, wallet_count }
+            }
+            DeepVerificationResult::NotEnabled => return,
+        };
+
+        if current != new_state
+            && let Err(e) = db.global_config.set_cloud_backup(&new_state)
+        {
+            error!("Failed to persist verification state: {e}");
+        }
+    }
+
+    fn do_repair_passkey_wrapper(&self) -> Result<(), CloudBackupError> {
+        let keychain = Keychain::global();
+        let cspp = cove_cspp::Cspp::new(keychain.clone());
+        let cloud = CloudStorage::global();
+        let passkey = PasskeyAccess::global();
+
+        // step 1: load local master key (bypass cache)
+        let local_mk = cspp
+            .load_master_key_from_store()
+            .map_err_prefix("load local master key", CloudBackupError::Internal)?
+            .ok_or_else(|| CloudBackupError::Internal("no local master key".into()))?;
+
+        // step 2: download manifest and prove local key can decrypt a wallet
+        let manifest = match cloud.download_manifest() {
+            Ok(json) => {
+                let m: BackupManifest =
+                    serde_json::from_slice(&json).map_err_str(CloudBackupError::Internal)?;
+                Some(m)
+            }
+            Err(CloudStorageError::NotFound(_)) => None,
+            Err(e) => return Err(CloudBackupError::Cloud(format!("download manifest: {e}"))),
+        };
+
+        if let Some(ref m) = manifest
+            && !m.wallet_record_ids.is_empty()
+        {
+            let critical_key = Zeroizing::new(local_mk.critical_data_key());
+            let mut proved = false;
+            let mut had_wrong_key = false;
+
+            for rid in &m.wallet_record_ids {
+                match cloud.download_wallet_backup(rid.clone()) {
+                    Ok(json) => {
+                        let encrypted: cove_cspp::backup_data::EncryptedWalletBackup =
+                            match serde_json::from_slice(&json) {
+                                Ok(e) => e,
+                                Err(_) => continue,
+                            };
+                        if encrypted.version != 1 {
+                            continue;
+                        }
+                        match wallet_crypto::decrypt_wallet_backup(&encrypted, &critical_key) {
+                            Ok(_) => {
+                                proved = true;
+                                break;
+                            }
+                            Err(cove_cspp::CsppError::WrongKey) => {
+                                had_wrong_key = true;
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+                    Err(_) => continue,
+                }
+            }
+
+            if !proved && had_wrong_key {
+                return Err(CloudBackupError::Crypto(
+                    "local master key cannot decrypt existing cloud wallet backups".into(),
+                ));
+            }
+
+            if !proved {
+                return Err(CloudBackupError::Cloud(
+                    "could not download any wallet to verify local key".into(),
+                ));
+            }
+        }
+
+        // step 3: create new passkey and re-wrap
+        let new_prf = create_prf_key_without_persisting(passkey)?;
+
+        let encrypted_backup =
+            master_key_crypto::encrypt_master_key(&local_mk, &new_prf.prf_key, &new_prf.prf_salt)
+                .map_err_str(CloudBackupError::Crypto)?;
+
+        let backup_json =
+            serde_json::to_vec(&encrypted_backup).map_err_str(CloudBackupError::Internal)?;
+
+        // step 4: upload, then persist credentials
+        cloud.upload_master_key_backup(backup_json).map_err_str(CloudBackupError::Cloud)?;
+
+        keychain
+            .save(CREDENTIAL_ID_KEY.into(), hex::encode(&new_prf.credential_id))
+            .map_err_prefix("save credential", CloudBackupError::Internal)?;
+        keychain
+            .save(PRF_SALT_KEY.into(), hex::encode(new_prf.prf_salt))
+            .map_err_prefix("save prf_salt", CloudBackupError::Internal)?;
+
+        info!("Repaired cloud master key wrapper with new passkey");
+        Ok(())
+    }
+
+    fn do_deep_verify_cloud_backup(&self) -> Result<DeepVerificationResult, CloudBackupError> {
+        let keychain = Keychain::global();
+        let cspp = cove_cspp::Cspp::new(keychain.clone());
+        let cloud = CloudStorage::global();
+        let passkey = PasskeyAccess::global();
+
+        let mut report = DeepVerificationReport {
+            master_key_wrapper_repaired: false,
+            local_master_key_repaired: false,
+            credential_recovered: false,
+            wallets_verified: 0,
+            wallets_failed: 0,
+            wallets_unsupported: 0,
+            detail: None,
+        };
+
+        // step 2: load local master key from store (bypasses cache)
+        let local_master_key = cspp
+            .load_master_key_from_store()
+            .map_err_prefix("load local master key", CloudBackupError::Internal)?;
+
+        // step 3: download manifest
+        let mut manifest_missing = false;
+        let manifest = match cloud.download_manifest() {
+            Ok(json) => {
+                let m: BackupManifest =
+                    serde_json::from_slice(&json).map_err_str(CloudBackupError::Internal)?;
+                if m.version != 1 {
+                    return Ok(DeepVerificationResult::Failed(
+                        DeepVerificationFailure::UnsupportedVersion {
+                            message: format!("manifest version {} is not supported", m.version),
+                            detail: None,
+                        },
+                    ));
+                }
+                let detail = build_detail_from_manifest(&m);
+                report.detail = Some(detail);
+                Some(m)
+            }
+            Err(CloudStorageError::NotFound(_)) => {
+                manifest_missing = true;
+                None
+            }
+            Err(e) => {
+                return Ok(DeepVerificationResult::Failed(DeepVerificationFailure::Retry {
+                    message: format!("failed to download manifest: {e}"),
+                    detail: None,
+                }));
+            }
+        };
+
+        // step 4: download encrypted master key backup
+        let encrypted_master = match cloud.download_master_key_backup() {
+            Ok(json) => {
+                let em: cove_cspp::backup_data::EncryptedMasterKeyBackup =
+                    serde_json::from_slice(&json).map_err_str(CloudBackupError::Internal)?;
+                if em.version != 1 {
+                    return Ok(DeepVerificationResult::Failed(
+                        DeepVerificationFailure::UnsupportedVersion {
+                            message: format!(
+                                "master key backup version {} is not supported",
+                                em.version
+                            ),
+                            detail: report.detail.clone(),
+                        },
+                    ));
+                }
+                Some(em)
+            }
+            Err(CloudStorageError::NotFound(_)) => {
+                if local_master_key.is_some() {
+                    None // will enter wrapper-repair path
+                } else {
+                    return Ok(DeepVerificationResult::Failed(
+                        DeepVerificationFailure::ReinitializeBackup {
+                            message: "master key backup not found in iCloud and no local key"
+                                .into(),
+                            detail: report.detail.clone(),
+                            warning: "This will replace your entire cloud backup set. Wallets that only exist in the cloud backup will be lost".into(),
+                        },
+                    ));
+                }
+            }
+            Err(e) => {
+                return Ok(DeepVerificationResult::Failed(DeepVerificationFailure::Retry {
+                    message: format!("failed to download master key backup: {e}"),
+                    detail: report.detail.clone(),
+                }));
+            }
+        };
+
+        // step 5 + 6: passkey auth and master key decryption
+        let (verified_master_key, needs_wrapper_repair) = if let Some(ref em) = encrypted_master {
+            let prf_salt = em.prf_salt;
+
+            // try authenticate with cascading fallback
+            let prf_result = authenticate_with_fallback(keychain, passkey, &prf_salt);
+
+            match prf_result {
+                Ok((prf_key, credential_id, recovered)) => {
+                    report.credential_recovered = recovered;
+
+                    // step 6: decrypt cloud master key
+                    match master_key_crypto::decrypt_master_key(em, &prf_key) {
+                        Ok(mk) => {
+                            // persist credential_id + prf_salt after successful decrypt
+                            keychain
+                                .save(CREDENTIAL_ID_KEY.into(), hex::encode(&credential_id))
+                                .map_err_prefix("save credential_id", CloudBackupError::Internal)?;
+                            keychain
+                                .save(PRF_SALT_KEY.into(), hex::encode(prf_salt))
+                                .map_err_prefix("save prf_salt", CloudBackupError::Internal)?;
+                            (Some(mk), false)
+                        }
+                        Err(_) => {
+                            if local_master_key.is_some() {
+                                // decrypt failed but we have local key — wrapper repair
+                                (None, true)
+                            } else {
+                                return Ok(DeepVerificationResult::Failed(
+                                    DeepVerificationFailure::ReinitializeBackup {
+                                        message: "could not decrypt cloud master key and no local key available".into(),
+                                        detail: report.detail.clone(),
+                                        warning: "This will replace your entire cloud backup set. Wallets that only exist in the cloud backup will be lost".into(),
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                }
+                Err(CloudBackupError::Passkey(msg)) if msg == "user cancelled" => {
+                    return Ok(DeepVerificationResult::UserCancelled(report.detail));
+                }
+                Err(CloudBackupError::Passkey(msg))
+                    if msg.contains("no credential found") || msg.contains("NoCredentialFound") =>
+                {
+                    if local_master_key.is_some() {
+                        (None, true) // wrapper repair with new passkey
+                    } else {
+                        return Ok(DeepVerificationResult::Failed(
+                            DeepVerificationFailure::ReinitializeBackup {
+                                message: "no passkey found and no local master key".into(),
+                                detail: report.detail.clone(),
+                                warning: "This will replace your entire cloud backup set. Wallets that only exist in the cloud backup will be lost".into(),
+                            },
+                        ));
+                    }
+                }
+                Err(e) => {
+                    return Ok(DeepVerificationResult::Failed(DeepVerificationFailure::Retry {
+                        message: format!("passkey authentication failed: {e}"),
+                        detail: report.detail.clone(),
+                    }));
+                }
+            }
+        } else {
+            // no encrypted master key in cloud — will wrapper-repair
+            (None, true)
+        };
+
+        // determine which master key to use for verification
+        let master_key = if let Some(mk) = verified_master_key {
+            // step 7: reconcile cloud master key with local state
+            match &local_master_key {
+                None => {
+                    // local missing — repair from cloud
+                    cspp.save_master_key(&mk)
+                        .map_err_prefix("repair local master key", CloudBackupError::Internal)?;
+                    cove_cspp::reset_master_key_cache();
+                    report.local_master_key_repaired = true;
+                    info!("Repaired local master key from cloud");
+                }
+                Some(local_mk) if local_mk.as_bytes() != mk.as_bytes() => {
+                    // local differs — cloud is authoritative
+                    cspp.save_master_key(&mk)
+                        .map_err_prefix("repair local master key", CloudBackupError::Internal)?;
+                    cove_cspp::reset_master_key_cache();
+                    report.local_master_key_repaired = true;
+                    info!("Repaired local master key to match cloud");
+                }
+                Some(_) => {
+                    // match — all good
+                }
+            }
+
+            // step 8: missing manifest after master key verification
+            if manifest_missing {
+                return Ok(DeepVerificationResult::Failed(
+                    DeepVerificationFailure::RecreateManifest {
+                        message: "backup index not found in iCloud".into(),
+                        detail: report.detail.clone(),
+                        warning: "Recreating the backup index from this device will remove references to wallets that only exist in the cloud backup".into(),
+                    },
+                ));
+            }
+
+            mk
+        } else if needs_wrapper_repair {
+            // auto-repair path: wrapper repair using local master key
+            let local_mk = local_master_key.as_ref().expect("checked earlier");
+
+            // proof step: verify local key can decrypt at least one wallet
+            if let Some(ref m) = manifest
+                && !m.wallet_record_ids.is_empty()
+            {
+                let critical_key = Zeroizing::new(local_mk.critical_data_key());
+                let mut proved = false;
+                let mut had_wrong_key = false;
+
+                for rid in &m.wallet_record_ids {
+                    match cloud.download_wallet_backup(rid.clone()) {
+                        Ok(json) => {
+                            let encrypted: cove_cspp::backup_data::EncryptedWalletBackup =
+                                match serde_json::from_slice(&json) {
+                                    Ok(e) => e,
+                                    Err(_) => continue,
+                                };
+                            if encrypted.version != 1 {
+                                continue;
+                            }
+                            match wallet_crypto::decrypt_wallet_backup(&encrypted, &critical_key) {
+                                Ok(_) => {
+                                    proved = true;
+                                    break;
+                                }
+                                Err(cove_cspp::CsppError::WrongKey) => {
+                                    had_wrong_key = true;
+                                }
+                                Err(_) => continue,
+                            }
+                        }
+                        Err(_) => continue,
+                    }
+                }
+
+                if !proved && had_wrong_key {
+                    return Ok(DeepVerificationResult::Failed(
+                        DeepVerificationFailure::ReinitializeBackup {
+                            message: "local master key cannot decrypt existing cloud wallet backups".into(),
+                            detail: report.detail.clone(),
+                            warning: "This will replace your entire cloud backup set. Wallets that only exist in the cloud backup will be lost".into(),
+                        },
+                    ));
+                }
+
+                if !proved {
+                    return Ok(DeepVerificationResult::Failed(DeepVerificationFailure::Retry {
+                        message: "could not download any wallet to verify local key".into(),
+                        detail: report.detail.clone(),
+                    }));
+                }
+            }
+
+            // create new passkey and re-wrap, but don't persist until upload succeeds
+            let new_prf = create_prf_key_without_persisting(passkey)?;
+
+            let encrypted_backup = master_key_crypto::encrypt_master_key(
+                local_mk,
+                &new_prf.prf_key,
+                &new_prf.prf_salt,
+            )
+            .map_err_str(CloudBackupError::Crypto)?;
+
+            let backup_json =
+                serde_json::to_vec(&encrypted_backup).map_err_str(CloudBackupError::Internal)?;
+
+            cloud.upload_master_key_backup(backup_json).map_err_str(CloudBackupError::Cloud)?;
+
+            // only persist after successful upload
+            keychain
+                .save(CREDENTIAL_ID_KEY.into(), hex::encode(&new_prf.credential_id))
+                .map_err_prefix("save credential", CloudBackupError::Internal)?;
+            keychain
+                .save(PRF_SALT_KEY.into(), hex::encode(new_prf.prf_salt))
+                .map_err_prefix("save prf_salt", CloudBackupError::Internal)?;
+
+            report.master_key_wrapper_repaired = true;
+            info!("Repaired cloud master key wrapper with new passkey");
+
+            if manifest_missing {
+                return Ok(DeepVerificationResult::Failed(
+                    DeepVerificationFailure::RecreateManifest {
+                        message: "backup index not found in iCloud".into(),
+                        detail: report.detail.clone(),
+                        warning: "Recreating the backup index from this device will remove references to wallets that only exist in the cloud backup".into(),
+                    },
+                ));
+            }
+
+            cove_cspp::master_key::MasterKey::from_bytes(*local_mk.as_bytes())
+        } else {
+            unreachable!("either verified_master_key or needs_wrapper_repair must be set");
+        };
+
+        // step 9: verify wallet backups
+        if let Some(ref m) = manifest {
+            let critical_key = Zeroizing::new(master_key.critical_data_key());
+            let (verified, failed, unsupported) = verify_wallet_backups(cloud, m, &critical_key);
+            report.wallets_verified = verified;
+            report.wallets_failed = failed;
+            report.wallets_unsupported = unsupported;
+
+            // step 10: check for local wallets not in the manifest and auto-sync
+            let db = Database::global();
+            let cloud_record_ids: std::collections::HashSet<_> =
+                m.wallet_record_ids.iter().collect();
+            let unsynced: Vec<_> = all_local_wallets(&db)
+                .into_iter()
+                .filter(|w| !cloud_record_ids.contains(&wallet_record_id(w.id.as_ref())))
+                .collect();
+
+            if !unsynced.is_empty() {
+                let count = unsynced.len() as u32;
+                info!("Deep verify: {count} local wallet(s) not in cloud, auto-syncing");
+                match self.do_backup_wallets(&unsynced) {
+                    Ok(()) => {
+                        // rebuild detail with updated manifest
+                        if let Ok(json) = cloud.download_manifest()
+                            && let Ok(updated) = serde_json::from_slice::<BackupManifest>(&json)
+                        {
+                            report.detail = Some(build_detail_from_manifest(&updated));
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Deep verify: auto-sync failed: {e}");
+                    }
+                }
+            }
+        }
+
+        Ok(DeepVerificationResult::Verified(report))
     }
 
     /// Upload wallets to cloud and update manifest + local cache
@@ -437,7 +1026,9 @@ impl RustCloudBackupManager {
                 .upload_wallet_backup(record_id.clone(), wallet_json)
                 .map_err_str(CloudBackupError::Cloud)?;
 
-            manifest.wallet_record_ids.push(record_id);
+            if !manifest.wallet_record_ids.contains(&record_id) {
+                manifest.wallet_record_ids.push(record_id);
+            }
         }
 
         let manifest_json =
@@ -549,10 +1140,66 @@ impl RustCloudBackupManager {
                 wallet_type: metadata.wallet_type,
                 fingerprint: metadata.master_fingerprint.as_ref().map(|fp| fp.as_uppercase()),
                 status: CloudBackupWalletStatus::DeletedFromDevice,
+                record_id: Some(record_id.clone()),
             });
         }
 
         Ok(items)
+    }
+
+    fn do_restore_cloud_wallet(&self, record_id: &str) -> Result<(), CloudBackupError> {
+        let cloud = CloudStorage::global();
+        let cspp = cove_cspp::Cspp::new(Keychain::global().clone());
+        let master_key = cspp
+            .get_or_create_master_key()
+            .map_err_prefix("master key", CloudBackupError::Internal)?;
+        let critical_key = Zeroizing::new(master_key.critical_data_key());
+
+        let db = Database::global();
+        let mut existing_fingerprints: Vec<_> = all_local_wallets(&db)
+            .iter()
+            .filter_map(|w| {
+                w.master_fingerprint.as_ref().map(|fp| (**fp, w.network, w.wallet_mode))
+            })
+            .collect();
+
+        restore_single_wallet(cloud, record_id, &critical_key, &mut existing_fingerprints)?;
+        info!("Restored cloud wallet {record_id}");
+        Ok(())
+    }
+
+    fn do_delete_cloud_wallet(&self, record_id: &str) -> Result<(), CloudBackupError> {
+        let cloud = CloudStorage::global();
+
+        // delete the wallet file
+        cloud.delete_wallet_backup(record_id.to_string()).map_err_str(CloudBackupError::Cloud)?;
+
+        // remove from manifest
+        let manifest_json = cloud.download_manifest().map_err_str(CloudBackupError::Cloud)?;
+        let mut manifest: BackupManifest =
+            serde_json::from_slice(&manifest_json).map_err_str(CloudBackupError::Internal)?;
+
+        manifest.wallet_record_ids.retain(|rid| rid != record_id);
+
+        let updated_json = serde_json::to_vec(&manifest).map_err_str(CloudBackupError::Internal)?;
+        cloud.upload_manifest(updated_json).map_err_str(CloudBackupError::Cloud)?;
+
+        // update persisted wallet count
+        let wallet_count = manifest.wallet_record_ids.len() as u32;
+        let db = Database::global();
+        let last_sync = match db.global_config.cloud_backup() {
+            CloudBackup::Enabled { last_sync, .. } | CloudBackup::Unverified { last_sync, .. } => {
+                last_sync
+            }
+            CloudBackup::Disabled => None,
+        };
+        let _ = db.global_config.set_cloud_backup(&CloudBackup::Enabled {
+            last_sync,
+            wallet_count: Some(wallet_count),
+        });
+
+        info!("Deleted cloud wallet {record_id}");
+        Ok(())
     }
 
     /// Re-upload all local wallets to cloud when the manifest is missing
@@ -730,6 +1377,204 @@ impl RustCloudBackupManager {
         info!("Cloud backup restore complete");
         Ok(())
     }
+}
+
+/// Build a CloudBackupDetail from a manifest by comparing against local wallets
+fn build_detail_from_manifest(manifest: &BackupManifest) -> CloudBackupDetail {
+    let db = Database::global();
+    let last_sync = match db.global_config.cloud_backup() {
+        CloudBackup::Enabled { last_sync, .. } | CloudBackup::Unverified { last_sync, .. } => {
+            last_sync
+        }
+        CloudBackup::Disabled => None,
+    };
+
+    let cloud_record_ids: std::collections::HashSet<_> =
+        manifest.wallet_record_ids.iter().cloned().collect();
+
+    let local_wallets = all_local_wallets(&db);
+    let local_record_ids: std::collections::HashSet<_> =
+        local_wallets.iter().map(|w| wallet_record_id(w.id.as_ref())).collect();
+
+    let mut backed_up = Vec::new();
+    let mut not_backed_up = Vec::new();
+
+    for w in &local_wallets {
+        let record_id = wallet_record_id(w.id.as_ref());
+        let status = if cloud_record_ids.contains(&record_id) {
+            CloudBackupWalletStatus::BackedUp
+        } else {
+            CloudBackupWalletStatus::NotBackedUp
+        };
+
+        let item = CloudBackupWalletItem {
+            name: w.name.clone(),
+            network: w.network,
+            wallet_mode: w.wallet_mode,
+            wallet_type: w.wallet_type,
+            fingerprint: w.master_fingerprint.as_ref().map(|fp| fp.as_uppercase()),
+            status,
+            record_id: None,
+        };
+
+        match item.status {
+            CloudBackupWalletStatus::BackedUp => backed_up.push(item),
+            _ => not_backed_up.push(item),
+        }
+    }
+
+    let cloud_only_count =
+        cloud_record_ids.iter().filter(|rid| !local_record_ids.contains(*rid)).count() as u32;
+
+    CloudBackupDetail { last_sync, backed_up, not_backed_up, cloud_only_count }
+}
+
+/// Verify wallet backups by downloading and decrypting each one
+///
+/// Returns (verified, failed, unsupported) counts
+fn verify_wallet_backups(
+    cloud: &CloudStorage,
+    manifest: &BackupManifest,
+    critical_key: &[u8; 32],
+) -> (u32, u32, u32) {
+    let mut verified = 0u32;
+    let mut failed = 0u32;
+    let mut unsupported = 0u32;
+
+    for record_id in &manifest.wallet_record_ids {
+        let wallet_json = match cloud.download_wallet_backup(record_id.clone()) {
+            Ok(json) => json,
+            Err(e) => {
+                warn!("Verify: failed to download wallet {record_id}: {e}");
+                failed += 1;
+                continue;
+            }
+        };
+
+        let encrypted: cove_cspp::backup_data::EncryptedWalletBackup =
+            match serde_json::from_slice(&wallet_json) {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!("Verify: failed to deserialize wallet {record_id}: {e}");
+                    failed += 1;
+                    continue;
+                }
+            };
+
+        if encrypted.version != 1 {
+            unsupported += 1;
+            continue;
+        }
+
+        match wallet_crypto::decrypt_wallet_backup(&encrypted, critical_key) {
+            Ok(_) => verified += 1,
+            Err(e) => {
+                warn!("Verify: failed to decrypt wallet {record_id}: {e}");
+                failed += 1;
+            }
+        }
+    }
+
+    (verified, failed, unsupported)
+}
+
+/// Authenticate with passkey using cascading fallback
+///
+/// Returns (prf_key, credential_id, was_recovered_via_discovery)
+fn authenticate_with_fallback(
+    keychain: &Keychain,
+    passkey: &PasskeyAccess,
+    prf_salt: &[u8; 32],
+) -> Result<([u8; 32], Vec<u8>, bool), CloudBackupError> {
+    let stored_credential_id = keychain.get(CREDENTIAL_ID_KEY.into()).and_then(|hex_str| {
+        hex::decode(hex_str)
+            .inspect_err(|e| warn!("Failed to decode stored credential_id: {e}"))
+            .ok()
+    });
+
+    // try stored credential first
+    if let Some(ref cred_id) = stored_credential_id {
+        let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
+        match passkey.authenticate_with_prf(
+            RP_ID.to_string(),
+            cred_id.clone(),
+            prf_salt.to_vec(),
+            challenge,
+        ) {
+            Ok(prf_output) => {
+                let prf_key: [u8; 32] = prf_output
+                    .try_into()
+                    .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))?;
+                return Ok((prf_key, cred_id.clone(), false));
+            }
+            Err(cove_device::passkey::PasskeyError::UserCancelled) => {
+                return Err(CloudBackupError::Passkey("user cancelled".into()));
+            }
+            Err(e) => {
+                info!("Stored credential auth failed ({e}), trying discovery");
+            }
+        }
+    }
+
+    // fallback to discoverable assertion
+    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
+    let discovered = passkey
+        .discover_and_authenticate_with_prf(RP_ID.to_string(), prf_salt.to_vec(), challenge)
+        .map_err(|e| match e {
+            cove_device::passkey::PasskeyError::UserCancelled => {
+                CloudBackupError::Passkey("user cancelled".into())
+            }
+            cove_device::passkey::PasskeyError::NoCredentialFound => {
+                CloudBackupError::Passkey("no credential found".into())
+            }
+            other => CloudBackupError::Passkey(other.to_string()),
+        })?;
+
+    let prf_key: [u8; 32] = discovered
+        .prf_output
+        .try_into()
+        .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))?;
+
+    Ok((prf_key, discovered.credential_id, true))
+}
+
+struct UnpersistedPrfKey {
+    prf_key: [u8; 32],
+    prf_salt: [u8; 32],
+    credential_id: Vec<u8>,
+}
+
+/// Create a passkey and authenticate with PRF without persisting to keychain
+///
+/// Used by the wrapper-repair path where we need to defer persistence until
+/// after the cloud upload succeeds
+fn create_prf_key_without_persisting(
+    passkey: &PasskeyAccess,
+) -> Result<UnpersistedPrfKey, CloudBackupError> {
+    info!("Creating new passkey for wrapper repair");
+    let prf_salt: [u8; 32] = rand::rng().random();
+    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
+    let user_id = rand::rng().random::<[u8; 16]>().to_vec();
+
+    let credential_id = passkey
+        .create_passkey(RP_ID.to_string(), user_id, challenge)
+        .map_err_str(CloudBackupError::Passkey)?;
+
+    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
+    let prf_output = passkey
+        .authenticate_with_prf(
+            RP_ID.to_string(),
+            credential_id.clone(),
+            prf_salt.to_vec(),
+            challenge,
+        )
+        .map_err_str(CloudBackupError::Passkey)?;
+
+    let prf_key: [u8; 32] = prf_output
+        .try_into()
+        .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))?;
+
+    Ok(UnpersistedPrfKey { prf_key, prf_salt, credential_id })
 }
 
 /// Encrypt and upload all local wallets, create a fresh manifest, and persist enabled state
