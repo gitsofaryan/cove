@@ -7,13 +7,12 @@ struct DeviceRestoreView: View {
     let onError: (String) -> Void
 
     enum RestorePhase {
-        case restoring
+        case restoring(progress: (completed: UInt32, total: UInt32)? = nil)
         case complete(CloudBackupRestoreReport)
         case error(String)
     }
 
-    @State private var phase: RestorePhase = .restoring
-    @State private var progress: (completed: UInt32, total: UInt32)?
+    @State private var phase: RestorePhase = .restoring()
     private let backupManager = CloudBackupManager.shared
 
     var body: some View {
@@ -41,7 +40,7 @@ struct DeviceRestoreView: View {
     @ViewBuilder
     private var phaseContent: some View {
         switch phase {
-        case .restoring:
+        case let .restoring(progress):
             VStack(spacing: 12) {
                 if let progress {
                     ProgressView(
@@ -87,7 +86,7 @@ struct DeviceRestoreView: View {
                     .padding(.horizontal, 32)
 
                 Button {
-                    phase = .restoring
+                    phase = .restoring()
                     Task { await runRestore() }
                 } label: {
                     Text("Retry")
@@ -105,7 +104,7 @@ struct DeviceRestoreView: View {
             backupManager.restoreReport = nil
         }
 
-        phase = .restoring
+        phase = .restoring()
         backupManager.rust.restoreFromCloudBackup()
 
         await observeRestoreCompletion()
@@ -129,7 +128,7 @@ struct DeviceRestoreView: View {
             let report = backupManager.restoreReport
 
             await MainActor.run {
-                self.progress = currentProgress
+                self.phase = .restoring(progress: currentProgress)
             }
 
             switch currentState {

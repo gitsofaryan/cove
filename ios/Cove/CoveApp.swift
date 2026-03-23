@@ -243,7 +243,6 @@ extension CoveApp {
         {
             Log.info("[STARTUP] entering cloud check branch")
             Task.detached {
-                let cloud = CloudStorageAccessImpl()
                 do {
                     Log.info("[STARTUP] checking iCloud availability")
                     guard FileManager.default.ubiquityIdentityToken != nil else {
@@ -252,6 +251,7 @@ extension CoveApp {
                         return
                     }
 
+                    let cloud = CloudStorage(cloudStorage: CloudStorageAccessImpl())
                     Log.info("[STARTUP] calling hasAnyCloudBackup")
                     let hasBackup = try cloud.hasAnyCloudBackup()
                     Log.info("[STARTUP] hasAnyCloudBackup returned: \(hasBackup)")

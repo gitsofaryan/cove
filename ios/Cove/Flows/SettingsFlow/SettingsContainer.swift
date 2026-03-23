@@ -11,7 +11,6 @@ struct SettingsContainer: View {
     @Environment(AppManager.self) private var app
     let route: SettingsRoute
 
-    @State private var showNetworkChangeAlert = false
     @State private var pendingNetwork: Network? = nil
 
     var selectedNetwork: Binding<Network> {
@@ -20,7 +19,6 @@ struct SettingsContainer: View {
             set: { network in
                 if network != app.selectedNetwork {
                     pendingNetwork = network
-                    showNetworkChangeAlert = true
                 }
             }
         )
@@ -86,7 +84,10 @@ struct SettingsContainer: View {
                     .ignoresSafeArea(edges: .all)
             }
         )
-        .alert("Change Network?", isPresented: $showNetworkChangeAlert) {
+        .alert("Change Network?", isPresented: Binding(
+            get: { pendingNetwork != nil },
+            set: { if !$0 { pendingNetwork = nil } }
+        )) {
             Button("Yes, Change Network") {
                 if let network = pendingNetwork {
                     app.dispatch(action: .changeNetwork(network: network))
@@ -94,9 +95,7 @@ struct SettingsContainer: View {
                 }
                 pendingNetwork = nil
             }
-            Button("Cancel", role: .cancel) {
-                pendingNetwork = nil
-            }
+            Button("Cancel", role: .cancel) {}
         } message: {
             if let network = pendingNetwork {
                 Text("Switching to \(network) will take you to a wallet on that network.")
