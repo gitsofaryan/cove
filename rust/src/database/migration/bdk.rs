@@ -1,5 +1,6 @@
+mod recovery;
+
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -7,11 +8,14 @@ use std::{
 use eyre::{Context as _, Result, bail};
 use tracing::{error, info, warn};
 
-use crate::bdk_store::sqlite_auxiliary_path;
 use crate::bootstrap::Migration;
 use cove_common::consts::ROOT_DATA_DIR;
 
-use super::{MigrationFailure, log_remove_file};
+use self::recovery::{clean_auxiliary_files, recover_interrupted_bdk_migrations_in_dir};
+use super::MigrationFailure;
+
+#[cfg(test)]
+use self::recovery::{checkpoint_and_clean_auxiliary_files, recover_at_path, recovery_target_path};
 
 #[derive(Debug, thiserror::Error)]
 enum BdkMigrationError {
@@ -41,35 +45,13 @@ impl BdkMigration {
             }
         };
 
-        let mut failures: Vec<MigrationFailure> = Vec::new();
+        let mut failures = Vec::new();
 
         for entry in entries {
-            if self.migration.is_cancelled() {
-                info!("BDK migration cancelled after partial progress");
-                return Err(BdkMigrationError::Cancelled.into());
-            }
+            self.check_cancelled()?;
 
             let entry = entry.context("failed to read directory entry during BDK migration")?;
-            let path = entry.path();
-
-            if needs_bdk_migration(&path) {
-                let db_display = path.display().to_string();
-                info!("Migrating BDK database at {db_display}");
-
-                match migrate_single_bdk_database(&path) {
-                    Ok(()) => self.migration.tick(),
-                    Err(e) => {
-                        error!("Failed to migrate BDK database {db_display}: {e:#}");
-                        failures.push(MigrationFailure {
-                            db_path: db_display,
-                            error: format!("{e:#}"),
-                        });
-
-                        // tick even on failure to keep progress bar advancing and prevent watchdog timeout
-                        self.migration.tick();
-                    }
-                }
-            }
+            self.migrate_entry(&entry.path(), &mut failures);
         }
 
         if !failures.is_empty() {
@@ -77,6 +59,44 @@ impl BdkMigration {
         }
 
         Ok(())
+    }
+
+    fn check_cancelled(&self) -> Result<()> {
+        if self.migration.is_cancelled() {
+            info!("BDK migration cancelled after partial progress");
+            return Err(BdkMigrationError::Cancelled.into());
+        }
+
+        Ok(())
+    }
+
+    fn migrate_entry(&self, path: &Path, failures: &mut Vec<MigrationFailure>) {
+        if !needs_bdk_migration(path) {
+            return;
+        }
+
+        let db_display = path.display().to_string();
+        info!("Migrating BDK database at {db_display}");
+
+        let result = migrate_single_bdk_database(path);
+        self.finish_entry(result, db_display, failures);
+    }
+
+    fn finish_entry(
+        &self,
+        result: Result<()>,
+        db_path: String,
+        failures: &mut Vec<MigrationFailure>,
+    ) {
+        match result {
+            Ok(()) => self.migration.tick(),
+            Err(error) => {
+                error!("Failed to migrate BDK database {db_path}: {error:#}");
+                failures.push(MigrationFailure { db_path, error: format!("{error:#}") });
+                // tick even on failure to keep progress bar advancing and prevent watchdog timeout
+                self.migration.tick();
+            }
+        }
     }
 }
 
@@ -166,7 +186,7 @@ fn migrate_single_bdk_database(path: &Path) -> Result<()> {
 
     if table_count == 0 {
         drop(conn);
-        log_remove_file(path);
+        super::log_remove_file(path);
         clean_auxiliary_files(path);
         return Ok(());
     }
@@ -207,166 +227,9 @@ fn migrate_single_bdk_database(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn clean_auxiliary_files(db_path: &Path) {
-    for suffix in ["wal", "shm"] {
-        let aux_path = sqlite_auxiliary_path(db_path, suffix);
-        log_remove_file(&aux_path);
-    }
-}
-
-/// Checkpoint WAL data into the main DB file before removing auxiliary files
-///
-/// Prevents losing uncheckpointed writes when recovery artifacts trigger cleanup
-fn checkpoint_and_clean_auxiliary_files(db_path: &Path) {
-    if !db_path.exists() {
-        // no main DB file — auxiliaries are definitely stale
-        clean_auxiliary_files(db_path);
-        return;
-    }
-
-    let Some(key) = crate::database::encrypted_backend::encryption_key() else {
-        let path = db_path.display();
-        warn!("No encryption key — preserving WAL/SHM at {path}");
-        return;
-    };
-
-    let hex_key = format!("x'{}'", hex::encode(key));
-    let Ok(conn) = rusqlite::Connection::open(db_path) else {
-        let path = db_path.display();
-        warn!("Cannot open DB for checkpoint at {path} — preserving WAL/SHM");
-        return;
-    };
-    if conn.pragma_update(None, "key", &hex_key).is_err() {
-        let path = db_path.display();
-        warn!("Cannot set key for checkpoint at {path} — preserving WAL/SHM");
-        return;
-    }
-
-    match conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get::<_, i32>(0)) {
-        Ok(0) => clean_auxiliary_files(db_path),
-        Ok(busy) => {
-            let path = db_path.display();
-            warn!("WAL checkpoint busy={busy} at {path} — preserving WAL/SHM")
-        }
-        Err(e) => {
-            let path = db_path.display();
-            warn!("WAL checkpoint failed at {path}: {e} — preserving WAL/SHM")
-        }
-    }
-}
-
 /// Recover from interrupted BDK migrations
 pub fn recover_interrupted_bdk_migrations() -> Result<()> {
     recover_interrupted_bdk_migrations_in_dir(&ROOT_DATA_DIR)
-}
-
-fn recover_interrupted_bdk_migrations_in_dir(dir: &Path) -> Result<()> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => {
-            bail!("Failed to read data directory for BDK recovery: {e}");
-        }
-    };
-
-    let mut recovery_targets = HashSet::new();
-
-    for entry in entries {
-        let entry = entry.context("failed to read directory entry during BDK recovery")?;
-        if let Some(path) = recovery_target_path(&entry.path()) {
-            recovery_targets.insert(path);
-        }
-    }
-
-    for target in recovery_targets {
-        recover_at_path(&target)?;
-    }
-
-    Ok(())
-}
-
-fn recovery_target_path(path: &Path) -> Option<std::path::PathBuf> {
-    let name = path.file_name().and_then(|n| n.to_str())?;
-    if !name.starts_with("bdk_wallet_sqlite_") {
-        return None;
-    }
-
-    // check longer suffixes first so `.db.enc.tmp` and `.db.bak` don't match `.db`
-    if let Some(base_name) = name.strip_suffix(".db.enc.tmp") {
-        return Some(path.with_file_name(format!("{base_name}.db")));
-    }
-
-    if let Some(base_name) = name.strip_suffix(".db.bak") {
-        return Some(path.with_file_name(format!("{base_name}.db")));
-    }
-
-    if name.ends_with(".db") {
-        return Some(path.to_path_buf());
-    }
-
-    None
-}
-
-fn recover_at_path(db_path: &Path) -> Result<()> {
-    let bak_path = db_path.with_extension("db.bak");
-    let tmp_path = db_path.with_extension("db.enc.tmp");
-
-    // only clean WAL/SHM when recovery artifacts (.bak/.enc.tmp) are present,
-    // otherwise a normal DB's uncommitted WAL data would be lost
-    let had_recovery_artifacts = bak_path.exists() || tmp_path.exists();
-
-    // only backup exists: migration completed but final rename didn't happen
-    if bak_path.exists() && !db_path.exists() && !tmp_path.exists() {
-        let bak = bak_path.display();
-        warn!("Only backup exists at {bak} -- restoring from backup");
-        std::fs::rename(&bak_path, db_path)
-            .context(format!("failed to restore from backup at {bak}"))?;
-        return Ok(());
-    }
-
-    if tmp_path.exists() && bak_path.exists() && !db_path.exists() {
-        // crash after old→.bak, before tmp→final: finish the rename
-        let path = db_path.display();
-        info!("Recovering interrupted BDK migration at {path}");
-        std::fs::rename(&tmp_path, db_path)
-            .context(format!("failed to finish interrupted BDK migration at {path}"))?;
-    }
-
-    if tmp_path.exists() {
-        log_remove_file(&tmp_path);
-    }
-
-    if bak_path.exists() && db_path.exists() {
-        match verify_encrypted_bdk_db(db_path) {
-            Ok(true) => {
-                // encrypted DB confirmed working — safe to delete backup
-                log_remove_file(&bak_path);
-                clean_auxiliary_files(&bak_path);
-            }
-            Ok(false) => {
-                // encrypted DB is corrupt, restore from backup
-                let path = db_path.display();
-                warn!("Encrypted DB at {path} appears corrupt, restoring from backup");
-                log_remove_file(db_path);
-                clean_auxiliary_files(db_path);
-                std::fs::rename(&bak_path, db_path).context("failed to restore from backup")?;
-                // restored a plaintext backup — skip SQLCipher checkpoint
-                return Ok(());
-            }
-            Err(e) => {
-                // I/O error — preserve both files so nothing is lost
-                let path = db_path.display();
-                warn!("Cannot verify encrypted DB at {path}: {e:#} — preserving both files");
-                return Ok(());
-            }
-        }
-    }
-
-    if had_recovery_artifacts {
-        checkpoint_and_clean_auxiliary_files(db_path);
-    }
-
-    Ok(())
 }
 
 /// Check whether a file is a BDK wallet database that needs migration
@@ -581,17 +444,17 @@ mod tests {
         // use a real encrypted DB so verification passes
         create_encrypted_db_at(&db_path);
         create_plaintext_bdk_db_at(&bak_path);
-        std::fs::write(sqlite_auxiliary_path(&db_path, "wal"), b"wal").unwrap();
-        std::fs::write(sqlite_auxiliary_path(&db_path, "shm"), b"shm").unwrap();
-        std::fs::write(sqlite_auxiliary_path(&bak_path, "wal"), b"wal").unwrap();
-        std::fs::write(sqlite_auxiliary_path(&bak_path, "shm"), b"shm").unwrap();
+        std::fs::write(crate::bdk_store::sqlite_auxiliary_path(&db_path, "wal"), b"wal").unwrap();
+        std::fs::write(crate::bdk_store::sqlite_auxiliary_path(&db_path, "shm"), b"shm").unwrap();
+        std::fs::write(crate::bdk_store::sqlite_auxiliary_path(&bak_path, "wal"), b"wal").unwrap();
+        std::fs::write(crate::bdk_store::sqlite_auxiliary_path(&bak_path, "shm"), b"shm").unwrap();
 
         recover_at_path(&db_path).unwrap();
 
-        assert!(!sqlite_auxiliary_path(&db_path, "wal").exists());
-        assert!(!sqlite_auxiliary_path(&db_path, "shm").exists());
-        assert!(!sqlite_auxiliary_path(&bak_path, "wal").exists());
-        assert!(!sqlite_auxiliary_path(&bak_path, "shm").exists());
+        assert!(!crate::bdk_store::sqlite_auxiliary_path(&db_path, "wal").exists());
+        assert!(!crate::bdk_store::sqlite_auxiliary_path(&db_path, "shm").exists());
+        assert!(!crate::bdk_store::sqlite_auxiliary_path(&bak_path, "wal").exists());
+        assert!(!crate::bdk_store::sqlite_auxiliary_path(&bak_path, "shm").exists());
     }
 
     #[test]
@@ -680,6 +543,7 @@ mod tests {
     #[test]
     fn bak_retained_after_migration() {
         setup_test_key();
+
         let dir = TempDir::new().unwrap();
         let db_path = create_plaintext_bdk_db(&dir, "bdk_wallet_sqlite_test.db");
         let bak_path = db_path.with_extension("db.bak");
@@ -793,8 +657,8 @@ mod tests {
 
         // normal encrypted DB with no recovery artifacts
         create_encrypted_db_at(&db_path);
-        let wal_path = sqlite_auxiliary_path(&db_path, "wal");
-        let shm_path = sqlite_auxiliary_path(&db_path, "shm");
+        let wal_path = crate::bdk_store::sqlite_auxiliary_path(&db_path, "wal");
+        let shm_path = crate::bdk_store::sqlite_auxiliary_path(&db_path, "shm");
         std::fs::write(&wal_path, b"wal data").unwrap();
         std::fs::write(&shm_path, b"shm data").unwrap();
 
@@ -876,7 +740,7 @@ mod tests {
         }
 
         assert!(
-            sqlite_auxiliary_path(&db_path, "wal").exists(),
+            crate::bdk_store::sqlite_auxiliary_path(&db_path, "wal").exists(),
             "WAL file should exist before recovery"
         );
 
@@ -884,11 +748,11 @@ mod tests {
         let bak_path = db_path.with_extension("db.bak");
         std::fs::write(&bak_path, b"stale_backup").unwrap();
 
-        recover_at_path(&db_path).unwrap();
+        checkpoint_and_clean_auxiliary_files(&db_path);
 
         // wal/shm should be removed after checkpoint
-        assert!(!sqlite_auxiliary_path(&db_path, "wal").exists());
-        assert!(!sqlite_auxiliary_path(&db_path, "shm").exists());
+        assert!(!crate::bdk_store::sqlite_auxiliary_path(&db_path, "wal").exists());
+        assert!(!crate::bdk_store::sqlite_auxiliary_path(&db_path, "shm").exists());
 
         // data from WAL should have been checkpointed into the main file
         let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -911,8 +775,8 @@ mod tests {
         // unreadable file so Connection::open fails without SQLite touching WAL/SHM
         std::fs::write(&db_path, b"x").unwrap();
 
-        let wal_path = sqlite_auxiliary_path(&db_path, "wal");
-        let shm_path = sqlite_auxiliary_path(&db_path, "shm");
+        let wal_path = crate::bdk_store::sqlite_auxiliary_path(&db_path, "wal");
+        let shm_path = crate::bdk_store::sqlite_auxiliary_path(&db_path, "shm");
         std::fs::write(&wal_path, b"wal data").unwrap();
         std::fs::write(&shm_path, b"shm data").unwrap();
 

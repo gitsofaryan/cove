@@ -189,6 +189,88 @@ fn ensure_rustls_provider_installed() {
 static STORAGE_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
 static BOOTSTRAP_LOCK: Mutex<()> = Mutex::new(());
 
+struct StorageBootstrap {
+    track_progress: bool,
+    cancelled: Arc<AtomicBool>,
+    migration: Option<Arc<Migration>>,
+}
+
+impl StorageBootstrap {
+    fn new(track_progress: bool) -> Self {
+        Self { track_progress, cancelled: Arc::clone(&BOOTSTRAP_CANCELLED), migration: None }
+    }
+
+    fn set_step(&self, step: BootstrapStep) {
+        if self.track_progress {
+            set_step(step);
+        }
+    }
+
+    fn check_cancelled(&self) -> Result<(), AppInitError> {
+        if self.cancelled.load(Ordering::Acquire) {
+            Err(AppInitError::Cancelled("bootstrap cancelled by caller".into()))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn recover_redb_migrations(&self) -> Result<(), AppInitError> {
+        self.set_step(BootstrapStep::RecoveringInterruptedMigrations);
+        info!("Recovering interrupted redb migrations");
+        crate::database::migration::recover_interrupted_migrations()
+            .map_err_display_alt(AppInitError::MainDatabaseMigration)
+    }
+
+    fn init_migration_tracker(&mut self, bdk_count: u32) -> Arc<Migration> {
+        let total = self.pending_migration_total(bdk_count);
+        let migration = Arc::new(Migration::new(total, Arc::clone(&self.cancelled)));
+
+        if self.track_progress {
+            migration::set_active_migration(Some(Arc::clone(&migration)));
+        }
+
+        self.migration = Some(Arc::clone(&migration));
+        migration
+    }
+
+    fn pending_migration_total(&self, bdk_count: u32) -> u32 {
+        let main_needs = crate::database::migration::main_database_needs_migration();
+        let redb_count = crate::database::migration::count_redb_wallets_needing_migration();
+        main_needs as u32 + redb_count + bdk_count
+    }
+
+    fn run_main_database_migration(&self) -> Result<(), AppInitError> {
+        self.set_step(BootstrapStep::MigratingMainDatabase);
+        info!("Migrating main database if needed");
+        let migrated_main = crate::database::migration::migrate_main_database_if_needed()
+            .map_err_display_alt(AppInitError::MainDatabaseMigration)?;
+
+        if migrated_main {
+            self.migration().tick();
+        }
+
+        Ok(())
+    }
+
+    fn run_wallet_database_migration(&self) -> Result<(), AppInitError> {
+        self.set_step(BootstrapStep::MigratingWalletDatabases);
+        info!("Migrating wallet databases if needed");
+        if let Err(e) = crate::database::migration::WalletMigration::new(self.migration()).run() {
+            error!("Wallet database migration failed: {e:#}");
+            // prefer cancellation over migration error since the failure
+            // may have been caused by the cancellation itself
+            self.check_cancelled()?;
+            return Err(AppInitError::WalletDatabaseMigration(format!("{e:#}")));
+        }
+
+        Ok(())
+    }
+
+    fn migration(&self) -> Arc<Migration> {
+        Arc::clone(self.migration.as_ref().expect("migration tracker should be initialized"))
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Error, thiserror::Error)]
 #[uniffi(flat_error)]
 pub enum AppInitError {
@@ -244,10 +326,10 @@ fn ensure_storage_bootstrapped_internal(track_progress: bool) -> Result<u32, App
 
 /// Returns the pre-recovery BDK database count for use by attempt_bdk_migration
 fn do_bootstrap(track_progress: bool) -> Result<u32, AppInitError> {
+    let mut bootstrap = StorageBootstrap::new(track_progress);
+
     crate::logging::init();
-    if track_progress {
-        set_step(BootstrapStep::DerivingEncryptionKey);
-    }
+    bootstrap.set_step(BootstrapStep::DerivingEncryptionKey);
     info!("Starting storage bootstrap");
 
     // load or create local DB encryption key from keychain
@@ -282,64 +364,29 @@ fn do_bootstrap(track_progress: bool) -> Result<u32, AppInitError> {
     };
     crate::database::encrypted_backend::set_encryption_key(key);
 
-    if track_progress {
-        set_step(BootstrapStep::EncryptionKeySet);
-    }
+    bootstrap.set_step(BootstrapStep::EncryptionKeySet);
     info!("Local encryption key loaded and set");
 
     // verify the key matches the existing database before proceeding
     crate::database::encrypted_backend::verify_database_key(&encrypted_db)
         .map_err(map_database_key_verification_error)?;
 
-    check_cancelled()?;
+    bootstrap.check_cancelled()?;
 
-    // recover interrupted redb migrations before proceeding
-    if track_progress {
-        set_step(BootstrapStep::RecoveringInterruptedMigrations);
-    }
-    info!("Recovering interrupted redb migrations");
-    crate::database::migration::recover_interrupted_migrations()
-        .map_err_display_alt(AppInitError::MainDatabaseMigration)?;
+    bootstrap.recover_redb_migrations()?;
 
-    check_cancelled()?;
+    bootstrap.check_cancelled()?;
 
     // pre-count BDK databases before recovery so the total is stable
     let bdk_count = crate::database::migration::count_bdk_databases_needing_migration();
 
-    // count items needing migration for progress bar
-    let main_needs = crate::database::migration::main_database_needs_migration();
-    let redb_count = crate::database::migration::count_redb_wallets_needing_migration();
-    let total = main_needs as u32 + redb_count + bdk_count;
+    bootstrap.init_migration_tracker(bdk_count);
 
-    let migration = Arc::new(Migration::new(total, Arc::clone(&BOOTSTRAP_CANCELLED)));
-    if track_progress {
-        migration::set_active_migration(Some(Arc::clone(&migration)));
-    }
+    bootstrap.run_main_database_migration()?;
 
-    if track_progress {
-        set_step(BootstrapStep::MigratingMainDatabase);
-    }
-    info!("Migrating main database if needed");
-    let migrated_main = crate::database::migration::migrate_main_database_if_needed()
-        .map_err_display_alt(AppInitError::MainDatabaseMigration)?;
+    bootstrap.check_cancelled()?;
 
-    if migrated_main {
-        migration.tick();
-    }
-
-    check_cancelled()?;
-
-    if track_progress {
-        set_step(BootstrapStep::MigratingWalletDatabases);
-    }
-    info!("Migrating wallet databases if needed");
-    if let Err(e) = crate::database::migration::WalletMigration::new(Arc::clone(&migration)).run() {
-        error!("Wallet database migration failed: {e:#}");
-        // prefer cancellation over migration error since the failure
-        // may have been caused by the cancellation itself
-        check_cancelled()?;
-        return Err(AppInitError::WalletDatabaseMigration(format!("{e:#}")));
-    }
+    bootstrap.run_wallet_database_migration()?;
 
     info!("Storage bootstrap complete");
     Ok(bdk_count)

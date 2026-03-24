@@ -1,16 +1,25 @@
-use std::marker::PhantomData;
+mod copy;
+mod recovery;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use eyre::{Context as _, Result};
-use redb::{ReadableTable as _, TableDefinition, TableHandle as _, TypeName};
 use tracing::{error, info, warn};
 
 use crate::bootstrap::Migration;
 use crate::database::encrypted_backend::EncryptedBackend;
 use cove_common::consts::{ROOT_DATA_DIR, WALLET_DATA_DIR};
 
-use super::{MigrationFailure, log_remove_file};
+use self::copy::{copy_table, verify_encrypted_redb_db};
+use self::recovery::recover_interrupted_migrations as recover_interrupted_migrations_impl;
+use super::MigrationFailure;
+
+#[cfg(test)]
+use self::copy::{RawKey, RawValue};
+
+#[cfg(test)]
+use self::recovery::{recover_legacy_at_path, recover_main_migration, recover_wallet_migration};
 
 #[derive(Debug, thiserror::Error)]
 enum WalletMigrationError {
@@ -26,360 +35,50 @@ const LEGACY_WALLET_DB: &str = "wallet_data.json";
 const ENCRYPTED_MAIN_DB: &str = "cove.encrypted.db";
 const ENCRYPTED_WALLET_DB: &str = "wallet_data.encrypted.json.redb";
 
-/// Wrapper that reads/writes raw bytes while matching V's type_name
-///
-/// During migration we only move bytes between databases, no deserialization
-/// needed. This avoids panics from stale enum variants or missing serde fields
-/// that would trigger `expect()` in `Json<T>::from_bytes` / `Cbor<T>::from_bytes`
-#[derive(Debug)]
-struct RawValue<V: redb::Value>(PhantomData<V>);
-
-impl<V: redb::Value + 'static> redb::Value for RawValue<V> {
-    type SelfType<'a>
-        = &'a [u8]
-    where
-        Self: 'a;
-
-    type AsBytes<'a>
-        = &'a [u8]
-    where
-        Self: 'a;
-
-    fn fixed_width() -> Option<usize> {
-        V::fixed_width()
-    }
-
-    fn from_bytes<'a>(data: &'a [u8]) -> &'a [u8]
-    where
-        Self: 'a,
-    {
-        data
-    }
-
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> &'a [u8]
-    where
-        Self: 'b,
-    {
-        value
-    }
-
-    fn type_name() -> TypeName {
-        V::type_name()
-    }
+pub(super) struct DatabasePaths {
+    source: PathBuf,
+    dest: PathBuf,
+    tmp: PathBuf,
 }
 
-/// Wrapper that reads/writes raw key bytes while matching K's type_name and compare
-#[derive(Debug)]
-struct RawKey<K: redb::Key>(PhantomData<K>);
-
-impl<K: redb::Key + 'static> redb::Value for RawKey<K> {
-    type SelfType<'a>
-        = &'a [u8]
-    where
-        Self: 'a;
-
-    type AsBytes<'a>
-        = &'a [u8]
-    where
-        Self: 'a;
-
-    fn fixed_width() -> Option<usize> {
-        K::fixed_width()
-    }
-
-    fn from_bytes<'a>(data: &'a [u8]) -> &'a [u8]
-    where
-        Self: 'a,
-    {
-        data
-    }
-
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> &'a [u8]
-    where
-        Self: 'b,
-    {
-        value
-    }
-
-    fn type_name() -> TypeName {
-        K::type_name()
-    }
-}
-
-impl<K: redb::Key + 'static> redb::Key for RawKey<K> {
-    fn compare(data1: &[u8], data2: &[u8]) -> std::cmp::Ordering {
-        // delegates to original comparator for BTree ordering correctness
-        // safe for migration: key bytes in the source BTree were successfully
-        // written and iterated, so K::compare won't encounter unknown formats
-        // (key schemas don't evolve like value schemas do)
-        K::compare(data1, data2)
-    }
-}
-
-/// Copy all rows from one table in src_db to the same table in dst_db
-///
-/// Uses raw byte wrappers to avoid deserializing keys/values during copy;
-/// this prevents panics from stale records with outdated schema
-fn copy_table<K, V>(
-    src_db: &redb::Database,
-    dst_db: &redb::Database,
-    table_def: TableDefinition<K, V>,
-) -> Result<u64>
-where
-    K: redb::Key + 'static,
-    V: redb::Value + 'static,
-{
-    let name = table_def.name();
-    let raw_def = TableDefinition::<RawKey<K>, RawValue<V>>::new(name);
-
-    let read_txn = src_db.begin_read().context("failed to begin read on source")?;
-
-    let src_table = match read_txn.open_table(raw_def) {
-        Ok(table) => table,
-        // table doesn't exist in source, nothing to copy
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
-        Err(e) => return Err(e).context("failed to open source table"),
-    };
-
-    let write_txn = dst_db.begin_write().context("failed to begin write on destination")?;
-    let mut count = 0u64;
-
-    {
-        let mut dst_table = write_txn.open_table(raw_def).context("failed to open dest table")?;
-
-        for entry in src_table.iter().context("failed to iterate source table")? {
-            let (key, value) = entry.context("failed to read entry")?;
-            dst_table.insert(key.value(), value.value()).context("failed to insert entry")?;
-            count += 1;
-        }
-    }
-
-    write_txn.commit().context("failed to commit write")?;
-
-    info!("Copied table '{name}': {count} rows");
-    Ok(count)
-}
-
-/// Check whether an encrypted redb database can be opened and read
-///
-/// Returns `Ok(true)` if verified, `Ok(false)` if corrupt, `Err` for I/O errors
-fn verify_encrypted_redb_db(path: &Path) -> Result<bool> {
-    let path_display = path.display();
-
-    let key = crate::database::encrypted_backend::encryption_key().ok_or_else(|| {
-        eyre::eyre!("no encryption key available for verification of {path_display}")
-    })?;
-
-    let backend = match EncryptedBackend::open(path, &key) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!("Verification failed for {path_display}: could not open encrypted backend: {e}");
-            return Ok(false);
-        }
-    };
-
-    let db = match redb::Database::builder().create_with_backend(backend) {
-        Ok(db) => db,
-        Err(e) => {
-            warn!("Verification failed for {path_display}: could not create database: {e}");
-            return Ok(false);
-        }
-    };
-
-    let read_txn = match db.begin_read() {
-        Ok(txn) => txn,
-        Err(e) => {
-            warn!("Verification failed for {path_display}: could not begin read transaction: {e}");
-            return Ok(false);
-        }
-    };
-
-    if let Err(e) = read_txn.list_tables() {
-        warn!("Verification failed for {path_display}: could not list tables: {e}");
-        return Ok(false);
-    }
-
-    Ok(true)
-}
-
-/// Recover from interrupted migrations by checking for orphaned .tmp files
-pub fn recover_interrupted_migrations() -> Result<()> {
-    recover_main_migration(&ROOT_DATA_DIR)?;
-
-    let entries = match std::fs::read_dir(&*WALLET_DATA_DIR) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => {
-            return Err(e).context("failed to read wallet data directory for recovery");
-        }
-    };
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("Failed to read directory entry: {e}");
-                continue;
-            }
-        };
-        recover_wallet_migration(&entry.path())?;
-        recover_legacy_at_path(&entry.path().join(LEGACY_WALLET_DB))?;
-    }
-
-    // also clean up old-style .bak/.enc.tmp files from previous migration code
-    recover_legacy_at_path(&ROOT_DATA_DIR.join(LEGACY_MAIN_DB))?;
-
-    Ok(())
-}
-
-fn recover_main_migration(root_dir: &Path) -> Result<()> {
+fn main_database_paths(root_dir: &Path) -> DatabasePaths {
     let dest = root_dir.join(ENCRYPTED_MAIN_DB);
-    let tmp = dest.with_extension("db.tmp");
-
-    if tmp.exists() && !dest.exists() {
-        // crash after copy, before rename — verify then finish
-        match verify_encrypted_redb_db(&tmp) {
-            Ok(true) => {
-                std::fs::rename(&tmp, &dest)
-                    .context("failed to finish interrupted main DB migration")?;
-            }
-            _ => {
-                // corrupt tmp — remove it, migration retries next launch
-                log_remove_file(&tmp);
-            }
-        }
-    } else if tmp.exists() {
-        log_remove_file(&tmp);
+    DatabasePaths {
+        source: root_dir.join(LEGACY_MAIN_DB),
+        tmp: dest.with_extension("db.tmp"),
+        dest,
     }
-
-    // clean up leftover plaintext only after verifying encrypted version works
-    let source = root_dir.join(LEGACY_MAIN_DB);
-    if source.exists() && dest.exists() {
-        match verify_encrypted_redb_db(&dest) {
-            Ok(true) => log_remove_file(&source),
-            _ => warn!("Encrypted DB failed verification, preserving plaintext"),
-        }
-    }
-
-    Ok(())
 }
 
-fn recover_wallet_migration(wallet_dir: &Path) -> Result<()> {
+fn wallet_database_paths(wallet_dir: &Path) -> DatabasePaths {
     let dest = wallet_dir.join(ENCRYPTED_WALLET_DB);
-    let tmp = dest.with_extension("redb.tmp");
-
-    if tmp.exists() && !dest.exists() {
-        match verify_encrypted_redb_db(&tmp) {
-            Ok(true) => {
-                std::fs::rename(&tmp, &dest)
-                    .context("failed to finish interrupted wallet DB migration")?;
-            }
-            _ => {
-                log_remove_file(&tmp);
-            }
-        }
-    } else if tmp.exists() {
-        log_remove_file(&tmp);
+    DatabasePaths {
+        source: wallet_dir.join(LEGACY_WALLET_DB),
+        tmp: dest.with_extension("redb.tmp"),
+        dest,
     }
-
-    // clean up leftover plaintext
-    let source = wallet_dir.join(LEGACY_WALLET_DB);
-    if source.exists() && dest.exists() {
-        match verify_encrypted_redb_db(&dest) {
-            Ok(true) => log_remove_file(&source),
-            _ => warn!("Encrypted wallet DB failed verification, preserving plaintext"),
-        }
-    }
-
-    Ok(())
 }
 
-/// Legacy recovery for old-style .bak/.enc.tmp files from the previous migration code
-fn recover_legacy_at_path(db_path: &Path) -> Result<()> {
-    let extension = db_path.extension().and_then(std::ffi::OsStr::to_str).unwrap_or_default();
-    let bak_path = db_path.with_extension(format!("{extension}.bak"));
-    let tmp_path = db_path.with_extension(format!("{extension}.enc.tmp"));
-
-    // only .bak exists: old migration completed but final rename didn't happen
-    if bak_path.exists() && !db_path.exists() && !tmp_path.exists() {
-        let bak = bak_path.display();
-        warn!("Only legacy backup exists at {bak} -- restoring from backup");
-        std::fs::rename(&bak_path, db_path)
-            .context(format!("failed to restore from legacy backup at {bak}"))?;
-        return Ok(());
-    }
-
-    // both .enc.tmp and .bak exist but db missing: crashed during old two-phase swap
-    // after old→.bak rename but before tmp→final rename
-    if tmp_path.exists() && bak_path.exists() && !db_path.exists() {
-        let path = db_path.display();
-        info!("Recovering interrupted legacy migration at {path}");
-        match verify_encrypted_redb_db(&tmp_path) {
-            Ok(true) => {
-                std::fs::rename(&tmp_path, db_path)
-                    .context(format!("failed to finish interrupted legacy migration at {path}"))?;
-                log_remove_file(&bak_path);
-            }
-            _ => {
-                warn!("Legacy .enc.tmp at {path} is corrupt, restoring from backup");
-                log_remove_file(&tmp_path);
-                std::fs::rename(&bak_path, db_path)
-                    .context(format!("failed to restore from legacy backup at {path}"))?;
-            }
-        }
-        return Ok(());
-    }
-
-    if tmp_path.exists() {
-        log_remove_file(&tmp_path);
-    }
-
-    if bak_path.exists() && db_path.exists() {
-        match verify_encrypted_redb_db(db_path) {
-            Ok(true) => log_remove_file(&bak_path),
-            Ok(false) => {
-                let path = db_path.display();
-                warn!("Encrypted DB at {path} appears corrupt, restoring from legacy backup");
-
-                log_remove_file(db_path);
-                std::fs::rename(&bak_path, db_path)
-                    .context(format!("failed to restore from legacy backup at {path}"))?;
-            }
-            Err(e) => {
-                let path = db_path.display();
-                warn!("Cannot verify DB at {path}: {e:#} — preserving both files");
-            }
-        }
-    }
-
-    if bak_path.exists() && !db_path.exists() {
-        log_remove_file(&bak_path);
-    }
-
-    Ok(())
+pub fn recover_interrupted_migrations() -> Result<()> {
+    recover_interrupted_migrations_impl()
 }
 
 /// Check whether the main database needs migration (legacy plaintext exists, encrypted does not)
 pub fn main_database_needs_migration() -> bool {
-    let source = ROOT_DATA_DIR.join(LEGACY_MAIN_DB);
-    let dest = ROOT_DATA_DIR.join(ENCRYPTED_MAIN_DB);
-    source.exists() && !dest.exists() && !EncryptedBackend::is_encrypted(&source)
+    let paths = main_database_paths(&ROOT_DATA_DIR);
+    paths.source.exists() && !paths.dest.exists() && !EncryptedBackend::is_encrypted(&paths.source)
 }
 
 /// Check whether a wallet subdirectory needs plaintext-to-encrypted migration
 fn needs_redb_migration(wallet_dir: &Path) -> bool {
-    let source = wallet_dir.join(LEGACY_WALLET_DB);
-    source.exists()
-        && !wallet_dir.join(ENCRYPTED_WALLET_DB).exists()
-        && !EncryptedBackend::is_encrypted(&source)
+    let paths = wallet_database_paths(wallet_dir);
+    paths.source.exists() && !paths.dest.exists() && !EncryptedBackend::is_encrypted(&paths.source)
 }
 
 /// Check whether a wallet subdirectory has an already-encrypted legacy DB that just needs renaming
 fn needs_legacy_rename(wallet_dir: &Path) -> bool {
-    let source = wallet_dir.join(LEGACY_WALLET_DB);
-    source.exists()
-        && !wallet_dir.join(ENCRYPTED_WALLET_DB).exists()
-        && EncryptedBackend::is_encrypted(&source)
+    let paths = wallet_database_paths(wallet_dir);
+    paths.source.exists() && !paths.dest.exists() && EncryptedBackend::is_encrypted(&paths.source)
 }
 
 /// Count wallet subdirectories that have an unencrypted wallet_data.json
@@ -417,22 +116,22 @@ pub fn count_redb_wallets_needing_migration() -> u32 {
 ///
 /// Returns Ok(true) if migration was performed, Ok(false) if already encrypted or new
 pub fn migrate_main_database_if_needed() -> Result<bool> {
-    let source = ROOT_DATA_DIR.join(LEGACY_MAIN_DB);
-    let dest = ROOT_DATA_DIR.join(ENCRYPTED_MAIN_DB);
+    let paths = main_database_paths(&ROOT_DATA_DIR);
 
-    if !source.exists() || dest.exists() {
+    if !paths.source.exists() || paths.dest.exists() {
         return Ok(false);
     }
 
     // already encrypted by old migration code, just relocate to new path
-    if EncryptedBackend::is_encrypted(&source) {
+    if EncryptedBackend::is_encrypted(&paths.source) {
         info!("Legacy DB at cove.db is already encrypted, renaming to cove.encrypted.db");
-        std::fs::rename(&source, &dest).context("failed to rename already-encrypted legacy DB")?;
+        std::fs::rename(&paths.source, &paths.dest)
+            .context("failed to rename already-encrypted legacy DB")?;
         return Ok(true);
     }
 
     info!("Migrating main database to encrypted format");
-    migrate_main_database(&source)
+    migrate_main_database(&paths.source)
 }
 
 /// Create a new encrypted redb database at `tmp_path` for migration
@@ -466,33 +165,49 @@ fn verify_encrypted_dst(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn migrate_main_database(source_path: &Path) -> Result<bool> {
-    let dest_path = source_path.parent().unwrap_or(source_path).join(ENCRYPTED_MAIN_DB);
-    let tmp_path = dest_path.with_extension("db.tmp");
+fn migrate_database(
+    paths: &DatabasePaths,
+    open_context: &str,
+    rename_context: &str,
+    copy_tables: impl FnOnce(&redb::Database, &redb::Database) -> Result<()>,
+) -> Result<()> {
+    let src_db = redb::Database::open(&paths.source).with_context(|| open_context.to_string())?;
+    let dst_db = create_encrypted_dst(&paths.tmp)?;
 
-    let src_db =
-        redb::Database::open(source_path).context("failed to open plaintext main database")?;
-
-    let dst_db = create_encrypted_dst(&tmp_path)?;
-
-    copy_table(&src_db, &dst_db, crate::database::global_flag::TABLE)?;
-    copy_table(&src_db, &dst_db, crate::database::global_config::TABLE)?;
-    copy_table(&src_db, &dst_db, crate::database::global_cache::TABLE)?;
-    copy_table(&src_db, &dst_db, crate::database::wallet::TABLE)?;
-    copy_table(&src_db, &dst_db, crate::database::unsigned_transactions::MAIN_TABLE)?;
-    copy_table(&src_db, &dst_db, crate::database::unsigned_transactions::BY_WALLET_TABLE)?;
-    copy_table(&src_db, &dst_db, crate::database::historical_price::TABLE)?;
+    copy_tables(&src_db, &dst_db)?;
 
     drop(src_db);
     drop(dst_db);
 
     // verify BEFORE making any irreversible changes
-    verify_encrypted_dst(&tmp_path)?;
-    std::fs::rename(&tmp_path, &dest_path)
-        .context("failed to rename encrypted main database into place")?;
+    verify_encrypted_dst(&paths.tmp)?;
+    std::fs::rename(&paths.tmp, &paths.dest).with_context(|| rename_context.to_string())?;
 
     // only delete plaintext after encrypted is verified and in place
-    log_remove_file(source_path);
+    super::log_remove_file(&paths.source);
+
+    Ok(())
+}
+
+fn migrate_main_database(source_path: &Path) -> Result<bool> {
+    let root_dir = source_path.parent().unwrap_or(source_path);
+    let paths = main_database_paths(root_dir);
+
+    migrate_database(
+        &paths,
+        "failed to open plaintext main database",
+        "failed to rename encrypted main database into place",
+        |src_db, dst_db| {
+            copy_table(src_db, dst_db, crate::database::global_flag::TABLE)?;
+            copy_table(src_db, dst_db, crate::database::global_config::TABLE)?;
+            copy_table(src_db, dst_db, crate::database::global_cache::TABLE)?;
+            copy_table(src_db, dst_db, crate::database::wallet::TABLE)?;
+            copy_table(src_db, dst_db, crate::database::unsigned_transactions::MAIN_TABLE)?;
+            copy_table(src_db, dst_db, crate::database::unsigned_transactions::BY_WALLET_TABLE)?;
+            copy_table(src_db, dst_db, crate::database::historical_price::TABLE)?;
+            Ok(())
+        },
+    )?;
 
     info!("Main database migration complete");
     Ok(true)
@@ -517,45 +232,13 @@ impl WalletMigration {
             }
         };
 
-        let mut failures: Vec<MigrationFailure> = Vec::new();
+        let mut failures = Vec::new();
 
         for entry in entries {
-            if self.migration.is_cancelled() {
-                info!("Wallet database migration cancelled");
-                return Err(WalletMigrationError::Cancelled.into());
-            }
+            self.check_cancelled()?;
 
             let entry = entry.context("failed to read directory entry during wallet migration")?;
-            let wallet_dir = entry.path();
-            if needs_redb_migration(&wallet_dir) {
-                let source_db = wallet_dir.join(LEGACY_WALLET_DB);
-                let db_display = source_db.display().to_string();
-                info!("Migrating wallet database at {db_display}");
-                match migrate_wallet_database(&source_db) {
-                    Ok(()) => self.migration.tick(),
-                    Err(e) => {
-                        error!("Failed to migrate wallet database {db_display}: {e:#}");
-                        failures.push(MigrationFailure {
-                            db_path: db_display,
-                            error: format!("{e:#}"),
-                        });
-                        // tick even on failure to keep progress bar advancing and prevent watchdog timeout
-                        self.migration.tick();
-                    }
-                }
-            } else if needs_legacy_rename(&wallet_dir) {
-                // already encrypted by old migration code, just rename to new path
-                let source_db = wallet_dir.join(LEGACY_WALLET_DB);
-                let dest_db = wallet_dir.join(ENCRYPTED_WALLET_DB);
-                let db_display = source_db.display().to_string();
-                info!("Legacy wallet DB at {db_display} already encrypted, renaming");
-                if let Err(e) = std::fs::rename(&source_db, &dest_db) {
-                    error!("Failed to rename already-encrypted wallet DB {db_display}: {e:#}");
-                    failures
-                        .push(MigrationFailure { db_path: db_display, error: format!("{e:#}") });
-                }
-                self.migration.tick();
-            }
+            self.migrate_entry(&entry.path(), &mut failures);
         }
 
         if !failures.is_empty() {
@@ -564,35 +247,74 @@ impl WalletMigration {
 
         Ok(())
     }
+
+    fn check_cancelled(&self) -> Result<()> {
+        if self.migration.is_cancelled() {
+            info!("Wallet database migration cancelled");
+            return Err(WalletMigrationError::Cancelled.into());
+        }
+
+        Ok(())
+    }
+
+    fn migrate_entry(&self, wallet_dir: &Path, failures: &mut Vec<MigrationFailure>) {
+        if needs_redb_migration(wallet_dir) {
+            let source_db = wallet_database_paths(wallet_dir).source;
+            let db_display = source_db.display().to_string();
+            info!("Migrating wallet database at {db_display}");
+            self.finish_entry(migrate_wallet_database(&source_db), db_display, failures);
+            return;
+        }
+
+        if needs_legacy_rename(wallet_dir) {
+            let paths = wallet_database_paths(wallet_dir);
+            let db_display = paths.source.display().to_string();
+            info!("Legacy wallet DB at {db_display} already encrypted, renaming");
+            self.finish_entry(
+                std::fs::rename(&paths.source, &paths.dest).map_err(Into::into),
+                db_display,
+                failures,
+            );
+        }
+    }
+
+    fn finish_entry(
+        &self,
+        result: Result<()>,
+        db_path: String,
+        failures: &mut Vec<MigrationFailure>,
+    ) {
+        match result {
+            Ok(()) => self.migration.tick(),
+            Err(error) => {
+                error!("Failed to migrate wallet database {db_path}: {error:#}");
+                failures.push(MigrationFailure { db_path, error: format!("{error:#}") });
+                // tick even on failure to keep progress bar advancing and prevent watchdog timeout
+                self.migration.tick();
+            }
+        }
+    }
 }
 
 fn migrate_wallet_database(source_path: &Path) -> Result<()> {
-    let dest_path = source_path.with_file_name(ENCRYPTED_WALLET_DB);
-    let tmp_path = dest_path.with_extension("redb.tmp");
+    let wallet_dir = source_path.parent().unwrap_or(source_path);
+    let paths = wallet_database_paths(wallet_dir);
 
-    let src_db =
-        redb::Database::open(source_path).context("failed to open plaintext wallet database")?;
+    migrate_database(
+        &paths,
+        "failed to open plaintext wallet database",
+        "failed to rename encrypted wallet database into place",
+        |src_db, dst_db| {
+            copy_table(src_db, dst_db, crate::database::wallet_data::TABLE)?;
+            copy_table(src_db, dst_db, crate::database::wallet_data::label::TXN_TABLE)?;
+            copy_table(src_db, dst_db, crate::database::wallet_data::label::ADDRESS_TABLE)?;
+            copy_table(src_db, dst_db, crate::database::wallet_data::label::INPUT_TABLE)?;
+            copy_table(src_db, dst_db, crate::database::wallet_data::label::OUTPUT_TABLE)?;
+            Ok(())
+        },
+    )?;
 
-    let dst_db = create_encrypted_dst(&tmp_path)?;
-
-    copy_table(&src_db, &dst_db, crate::database::wallet_data::TABLE)?;
-    copy_table(&src_db, &dst_db, crate::database::wallet_data::label::TXN_TABLE)?;
-    copy_table(&src_db, &dst_db, crate::database::wallet_data::label::ADDRESS_TABLE)?;
-    copy_table(&src_db, &dst_db, crate::database::wallet_data::label::INPUT_TABLE)?;
-    copy_table(&src_db, &dst_db, crate::database::wallet_data::label::OUTPUT_TABLE)?;
-
-    drop(src_db);
-    drop(dst_db);
-
-    // verify BEFORE making any irreversible changes
-    verify_encrypted_dst(&tmp_path)?;
-    std::fs::rename(&tmp_path, &dest_path)
-        .context("failed to rename encrypted wallet database into place")?;
-
-    // only delete plaintext after encrypted is verified and in place
-    log_remove_file(source_path);
-
-    let path = dest_path.display();
+    let path = paths.dest.display();
     info!("Wallet database migration complete at {path}");
     Ok(())
 }
@@ -602,7 +324,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
 
-    use redb::ReadableTableMetadata as _;
+    use redb::{ReadableTableMetadata as _, TableDefinition};
 
     use super::*;
     use crate::database::{
