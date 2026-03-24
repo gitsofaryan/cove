@@ -63,8 +63,12 @@ struct OnboardingContainer: View {
 
         case .restoreOffer:
             CloudRestoreOfferView(
-                onRestore: { manager.dispatch(.startRestore) },
-                onSkip: { manager.dispatch(.skipRestore) }
+                onRestore: {
+                    manager.restoreError = nil
+                    manager.dispatch(.startRestore)
+                },
+                onSkip: { manager.dispatch(.skipRestore) },
+                errorMessage: manager.restoreError
             )
 
         case .restoring:

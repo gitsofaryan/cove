@@ -161,6 +161,9 @@ pub(crate) enum CloudBackupError {
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    #[error("Passkey didn't match any backups, please try a new one")]
+    PasskeyMismatch,
 }
 
 #[uniffi::export(callback_interface)]
@@ -1375,8 +1378,7 @@ impl RustCloudBackupManager {
             }
         }
 
-        let matched_namespace = matched_namespace
-            .ok_or_else(|| CloudBackupError::Crypto("no namespace matched the passkey".into()))?;
+        let matched_namespace = matched_namespace.ok_or(CloudBackupError::PasskeyMismatch)?;
         let master_key = master_key.unwrap();
 
         // check if there is an existing local master key

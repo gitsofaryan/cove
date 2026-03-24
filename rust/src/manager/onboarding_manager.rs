@@ -99,6 +99,7 @@ impl RustOnboardingManager {
             }
             OnboardingAction::RestoreFailed { error } => {
                 self.send(Message::RestoreError(error));
+                self.send(Message::StepChanged(OnboardingStep::RestoreOffer));
             }
         }
     }

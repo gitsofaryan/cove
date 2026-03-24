@@ -7,6 +7,7 @@ import SwiftUI
 struct CloudRestoreOfferView: View {
     let onRestore: () -> Void
     let onSkip: () -> Void
+    var errorMessage: String? = nil
 
     var body: some View {
         VStack(spacing: 24) {
@@ -24,6 +25,17 @@ struct CloudRestoreOfferView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 32)
+
+            if let errorMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(errorMessage)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 32)
+                .multilineTextAlignment(.center)
+            }
 
             Spacer()
 
