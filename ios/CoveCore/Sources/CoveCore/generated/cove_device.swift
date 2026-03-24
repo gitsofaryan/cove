@@ -510,6 +510,11 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 public protocol CloudStorageProtocol: AnyObject, Sendable {
     
+    /**
+     * Check if any cloud backup namespaces exist
+     */
+    func hasAnyCloudBackup() throws  -> Bool
+    
 }
 open class CloudStorage: CloudStorageProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -571,6 +576,17 @@ public convenience init(cloudStorage: CloudStorageAccess) {
 
     
 
+    
+    /**
+     * Check if any cloud backup namespaces exist
+     */
+open func hasAnyCloudBackup()throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeCloudStorageError_lift) {
+    uniffi_cove_device_fn_method_cloudstorage_has_any_cloud_backup(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
     
 
     
@@ -1427,19 +1443,14 @@ public protocol CloudStorageAccess: AnyObject, Sendable {
     func listNamespaces() throws  -> [String]
     
     /**
-     * List wallet backup record IDs within a namespace (excludes master key file)
+     * List wallet backup filenames within a namespace (e.g. "wallet-<hash>.json")
      */
-    func listWalletBackups(namespace: String) throws  -> [String]
+    func listWalletFiles(namespace: String) throws  -> [String]
     
     /**
-     * Check if any cloud backup namespaces exist
+     * Check whether a blob has been fully uploaded to iCloud
      */
-    func hasAnyCloudBackup() throws  -> Bool
-    
-    /**
-     * Delete all flat-format files directly in Data/ (legacy cleanup)
-     */
-    func deleteAllFlatFiles() throws 
+    func isBackupUploaded(namespace: String, recordId: String) throws  -> Bool
     
 }
 
@@ -1624,7 +1635,7 @@ fileprivate struct UniffiCallbackInterfaceCloudStorageAccess {
                 lowerError: FfiConverterTypeCloudStorageError_lower
             )
         },
-        listWalletBackups: { (
+        listWalletFiles: { (
             uniffiHandle: UInt64,
             namespace: RustBuffer,
             uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
@@ -1635,7 +1646,7 @@ fileprivate struct UniffiCallbackInterfaceCloudStorageAccess {
                 guard let uniffiObj = try? FfiConverterCallbackInterfaceCloudStorageAccess.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
-                return try uniffiObj.listWalletBackups(
+                return try uniffiObj.listWalletFiles(
                      namespace: try FfiConverterString.lift(namespace)
                 )
             }
@@ -1649,8 +1660,10 @@ fileprivate struct UniffiCallbackInterfaceCloudStorageAccess {
                 lowerError: FfiConverterTypeCloudStorageError_lower
             )
         },
-        hasAnyCloudBackup: { (
+        isBackupUploaded: { (
             uniffiHandle: UInt64,
+            namespace: RustBuffer,
+            recordId: RustBuffer,
             uniffiOutReturn: UnsafeMutablePointer<Int8>,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -1659,35 +1672,14 @@ fileprivate struct UniffiCallbackInterfaceCloudStorageAccess {
                 guard let uniffiObj = try? FfiConverterCallbackInterfaceCloudStorageAccess.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
-                return try uniffiObj.hasAnyCloudBackup(
+                return try uniffiObj.isBackupUploaded(
+                     namespace: try FfiConverterString.lift(namespace),
+                     recordId: try FfiConverterString.lift(recordId)
                 )
             }
 
             
             let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
-            uniffiTraitInterfaceCallWithError(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn,
-                lowerError: FfiConverterTypeCloudStorageError_lower
-            )
-        },
-        deleteAllFlatFiles: { (
-            uniffiHandle: UInt64,
-            uniffiOutReturn: UnsafeMutableRawPointer,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> () in
-                guard let uniffiObj = try? FfiConverterCallbackInterfaceCloudStorageAccess.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return try uniffiObj.deleteAllFlatFiles(
-                )
-            }
-
-            
-            let writeReturn = { () }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -2428,6 +2420,9 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_cove_device_checksum_method_cloudstorage_has_any_cloud_backup() != 55372) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_cove_device_checksum_method_passkeyaccess_is_prf_supported() != 31494) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2461,13 +2456,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_device_checksum_method_cloudstorageaccess_list_namespaces() != 28959) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_device_checksum_method_cloudstorageaccess_list_wallet_backups() != 62685) {
+    if (uniffi_cove_device_checksum_method_cloudstorageaccess_list_wallet_files() != 18430) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_device_checksum_method_cloudstorageaccess_has_any_cloud_backup() != 28006) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_cove_device_checksum_method_cloudstorageaccess_delete_all_flat_files() != 602) {
+    if (uniffi_cove_device_checksum_method_cloudstorageaccess_is_backup_uploaded() != 28663) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_device_checksum_method_deviceaccess_timezone() != 54194) {

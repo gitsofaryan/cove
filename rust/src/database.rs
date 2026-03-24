@@ -2,6 +2,7 @@
 //! That will be available across the app, and will be persisted across app launches.
 
 pub mod cbor;
+pub mod cloud_backup_upload_verification;
 pub mod encrypted_backend;
 pub mod error;
 pub mod global_cache;
@@ -20,6 +21,7 @@ use cove_util::result_ext::ResultExt as _;
 use std::{path::PathBuf, sync::Arc};
 
 use arc_swap::ArcSwap;
+use cloud_backup_upload_verification::CloudBackupUploadVerificationTable;
 use global_cache::GlobalCacheTable;
 use global_config::GlobalConfigTable;
 use global_flag::GlobalFlagTable;
@@ -44,6 +46,7 @@ pub struct Database {
     pub global_flag: GlobalFlagTable,
     pub global_config: GlobalConfigTable,
     pub global_cache: GlobalCacheTable,
+    pub cloud_backup_upload_verification: CloudBackupUploadVerificationTable,
     pub wallets: WalletsTable,
     pub unsigned_transactions: UnsignedTransactionsTable,
     pub historical_prices: HistoricalPriceTable,
@@ -128,6 +131,8 @@ impl Database {
         let global_flag = GlobalFlagTable::new(main_db_arc.clone(), &write_txn);
         let global_config = GlobalConfigTable::new(main_db_arc.clone(), &write_txn);
         let global_cache = GlobalCacheTable::new(main_db_arc.clone(), &write_txn);
+        let cloud_backup_upload_verification =
+            CloudBackupUploadVerificationTable::new(main_db_arc.clone(), &write_txn);
         let unsigned_transactions = UnsignedTransactionsTable::new(main_db_arc.clone(), &write_txn);
         let historical_prices = HistoricalPriceTable::new(main_db_arc.clone(), &write_txn);
 
@@ -137,6 +142,7 @@ impl Database {
             global_flag,
             global_config,
             global_cache,
+            cloud_backup_upload_verification,
             wallets,
             unsigned_transactions,
             historical_prices,

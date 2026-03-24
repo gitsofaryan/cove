@@ -57,6 +57,13 @@ pub trait CloudStorageAccess: Send + Sync + std::fmt::Debug + 'static {
 
     /// List wallet backup filenames within a namespace (e.g. "wallet-<hash>.json")
     fn list_wallet_files(&self, namespace: String) -> Result<Vec<String>, CloudStorageError>;
+
+    /// Check whether a blob has been fully uploaded to iCloud
+    fn is_backup_uploaded(
+        &self,
+        namespace: String,
+        record_id: String,
+    ) -> Result<bool, CloudStorageError>;
 }
 
 static REF: OnceCell<CloudStorage> = OnceCell::new();
@@ -138,6 +145,14 @@ impl CloudStorage {
 
     pub fn list_wallet_files(&self, namespace: String) -> Result<Vec<String>, CloudStorageError> {
         self.0.list_wallet_files(namespace)
+    }
+
+    pub fn is_backup_uploaded(
+        &self,
+        namespace: String,
+        record_id: String,
+    ) -> Result<bool, CloudStorageError> {
+        self.0.is_backup_uploaded(namespace, record_id)
     }
 
     pub fn list_wallet_backups(&self, namespace: String) -> Result<Vec<String>, CloudStorageError> {

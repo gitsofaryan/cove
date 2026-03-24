@@ -651,6 +651,13 @@ impl FfiApp {
     }
 }
 
+/// Initialize the global App instance (Updater, router, state)
+/// Must be called after storage bootstrap completes
+#[uniffi::export]
+pub fn initialize_app() {
+    App::global();
+}
+
 fn set_env() {
     //TODO: set manually in code for now
     #[cfg(debug_assertions)]

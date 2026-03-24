@@ -41,7 +41,7 @@ struct CheckboxToggleStyle: ToggleStyle {
 // MARK: - Main View
 
 struct TermsAndConditionsView: View {
-    let app: AppManager
+    let onAgree: () -> Void
 
     /// Toggle state for each acknowledgement
     @State private var checks: [Bool] = Array(repeating: false, count: 5)
@@ -111,7 +111,7 @@ struct TermsAndConditionsView: View {
 
                 // Primary action button
                 Button("Agree and Continue") {
-                    if allChecked { app.agreeToTerms() }
+                    if allChecked { onAgree() }
                 }
                 .font(.headline)
                 .fontWeight(.semibold)
@@ -127,5 +127,5 @@ struct TermsAndConditionsView: View {
 // MARK: - Preview
 
 #Preview {
-    TermsAndConditionsView(app: AppManager.shared)
+    TermsAndConditionsView(onAgree: {})
 }

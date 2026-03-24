@@ -157,6 +157,12 @@ private let walletModeChangeDelayMs = 250
         router = state.router
     }
 
+    /// Reload wallets from database (e.g. after cloud restore)
+    func reloadWallets() {
+        wallets = (try? database.wallets().all()) ?? []
+        walletManager = nil
+    }
+
     var currentRoute: Route {
         router.routes.last ?? router.default
     }

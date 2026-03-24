@@ -1,4 +1,4 @@
-@_exported import CoveCore
+import CoveCore
 import Foundation
 
 final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
@@ -8,28 +8,26 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
 
     func uploadMasterKeyBackup(namespace: String, data: Data) throws {
         let url = try helper.masterKeyFileURL(namespace: namespace)
-        try helper.coordinatedWrite(data: data, to: url)
-        try helper.waitForUpload(url: url)
+        try helper.writeForUpload(data: data, to: url)
+        try helper.waitForMetadataVisibility(url: url)
     }
 
     func uploadWalletBackup(namespace: String, recordId: String, data: Data) throws {
         let url = try helper.walletFileURL(namespace: namespace, recordId: recordId)
-        try helper.coordinatedWrite(data: data, to: url)
-        try helper.waitForUpload(url: url)
+        try helper.writeForUpload(data: data, to: url)
+        try helper.waitForMetadataVisibility(url: url)
     }
 
     // MARK: - Download
 
     func downloadMasterKeyBackup(namespace: String) throws -> Data {
         let url = try helper.masterKeyFileURL(namespace: namespace)
-        try helper.ensureDownloaded(url: url, recordId: "masterkey-\(namespace)")
-        return try helper.coordinatedRead(from: url)
+        return try helper.downloadFile(url: url, recordId: "masterkey-\(namespace)")
     }
 
     func downloadWalletBackup(namespace: String, recordId: String) throws -> Data {
         let url = try helper.walletFileURL(namespace: namespace, recordId: recordId)
-        try helper.ensureDownloaded(url: url, recordId: recordId)
-        return try helper.coordinatedRead(from: url)
+        return try helper.downloadFile(url: url, recordId: recordId)
     }
 
     func deleteWalletBackup(namespace: String, recordId: String) throws {
@@ -50,5 +48,9 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
     func listWalletFiles(namespace: String) throws -> [String] {
         let nsDir = try helper.namespaceDirectoryURL(namespace: namespace)
         return try helper.listFiles(namespacePath: nsDir.path, prefix: "wallet-")
+    }
+
+    func isBackupUploaded(namespace: String, recordId: String) throws -> Bool {
+        try helper.isBackupUploaded(namespace: namespace, recordId: recordId)
     }
 }

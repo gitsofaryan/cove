@@ -278,6 +278,10 @@ struct MainSettingsScreen: View {
                             Image(systemName: "exclamationmark.icloud")
                                 .foregroundStyle(.orange)
                             Text("Cloud Backup Unverified")
+                        } else if manager.hasPendingUploadVerification {
+                            Image(systemName: "arrow.clockwise.icloud")
+                                .foregroundStyle(.blue)
+                            Text("Cloud Backup Verifying")
                         } else {
                             Image(systemName: "checkmark.icloud")
                                 .foregroundStyle(.green)

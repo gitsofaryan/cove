@@ -7220,19 +7220,14 @@ public protocol RustCloudBackupManagerProtocol: AnyObject, Sendable {
     func debugResetCloudBackupState() 
     
     /**
-     * Delete legacy flat-format backup files from iCloud
-     *
-     * Returns None on success, Some(error) on failure
-     */
-    func deleteLegacyFlatBackup()  -> String?
-    
-    /**
      * Enable cloud backup — idempotent, safe to retry
      *
      * Creates passkey (or reuses existing), encrypts master key + all wallets,
-     * uploads to iCloud, marks enabled only after all uploads succeed
+     * hands them off to iCloud, then verifies full upload in the background
      */
     func enableCloudBackup() 
+    
+    func hasPendingCloudUploadVerification()  -> Bool
     
     /**
      * Check if cloud backup is enabled, used as nav guard
@@ -7252,6 +7247,8 @@ public protocol RustCloudBackupManagerProtocol: AnyObject, Sendable {
      * Uses discoverable credential assertion (no local keychain state required)
      */
     func restoreFromCloudBackup() 
+    
+    func resumePendingCloudUploadVerification() 
     
     /**
      * Read persisted cloud backup state from DB and update in-memory state
@@ -7362,29 +7359,24 @@ open func debugResetCloudBackupState()  {try! rustCall() {
 }
     
     /**
-     * Delete legacy flat-format backup files from iCloud
-     *
-     * Returns None on success, Some(error) on failure
-     */
-open func deleteLegacyFlatBackup() -> String?  {
-    return try!  FfiConverterOptionString.lift(try! rustCall() {
-    uniffi_cove_fn_method_rustcloudbackupmanager_delete_legacy_flat_backup(
-            self.uniffiCloneHandle(),$0
-    )
-})
-}
-    
-    /**
      * Enable cloud backup — idempotent, safe to retry
      *
      * Creates passkey (or reuses existing), encrypts master key + all wallets,
-     * uploads to iCloud, marks enabled only after all uploads succeed
+     * hands them off to iCloud, then verifies full upload in the background
      */
 open func enableCloudBackup()  {try! rustCall() {
     uniffi_cove_fn_method_rustcloudbackupmanager_enable_cloud_backup(
             self.uniffiCloneHandle(),$0
     )
 }
+}
+    
+open func hasPendingCloudUploadVerification() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_cove_fn_method_rustcloudbackupmanager_has_pending_cloud_upload_verification(
+            self.uniffiCloneHandle(),$0
+    )
+})
 }
     
     /**
@@ -7424,6 +7416,13 @@ open func listenForUpdates(reconciler: CloudBackupManagerReconciler)  {try! rust
      */
 open func restoreFromCloudBackup()  {try! rustCall() {
     uniffi_cove_fn_method_rustcloudbackupmanager_restore_from_cloud_backup(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+open func resumePendingCloudUploadVerification()  {try! rustCall() {
+    uniffi_cove_fn_method_rustcloudbackupmanager_resume_pending_cloud_upload_verification(
             self.uniffiCloneHandle(),$0
     )
 }
@@ -7867,6 +7866,139 @@ public func FfiConverterTypeRustImportWalletManager_lift(_ handle: UInt64) throw
 #endif
 public func FfiConverterTypeRustImportWalletManager_lower(_ value: RustImportWalletManager) -> UInt64 {
     return FfiConverterTypeRustImportWalletManager.lower(value)
+}
+
+
+
+
+
+
+public protocol RustOnboardingManagerProtocol: AnyObject, Sendable {
+    
+    func dispatch(action: OnboardingAction) 
+    
+    func listenForUpdates(reconciler: OnboardingManagerReconciler) 
+    
+}
+open class RustOnboardingManager: RustOnboardingManagerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_cove_fn_clone_rustonboardingmanager(self.handle, $0) }
+    }
+public convenience init() {
+    let handle =
+        try! rustCall() {
+    uniffi_cove_fn_constructor_rustonboardingmanager_new($0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_cove_fn_free_rustonboardingmanager(handle, $0) }
+    }
+
+    
+
+    
+open func dispatch(action: OnboardingAction)  {try! rustCall() {
+    uniffi_cove_fn_method_rustonboardingmanager_dispatch(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeOnboardingAction_lower(action),$0
+    )
+}
+}
+    
+open func listenForUpdates(reconciler: OnboardingManagerReconciler)  {try! rustCall() {
+    uniffi_cove_fn_method_rustonboardingmanager_listen_for_updates(
+            self.uniffiCloneHandle(),
+        FfiConverterCallbackInterfaceOnboardingManagerReconciler_lower(reconciler),$0
+    )
+}
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRustOnboardingManager: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = RustOnboardingManager
+
+    public static func lift(_ handle: UInt64) throws -> RustOnboardingManager {
+        return RustOnboardingManager(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: RustOnboardingManager) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RustOnboardingManager {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: RustOnboardingManager, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRustOnboardingManager_lift(_ handle: UInt64) throws -> RustOnboardingManager {
+    return try FfiConverterTypeRustOnboardingManager.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRustOnboardingManager_lower(_ value: RustOnboardingManager) -> UInt64 {
+    return FfiConverterTypeRustOnboardingManager.lower(value)
 }
 
 
@@ -17902,6 +18034,8 @@ public enum CloudBackupReconcileMessage: Equatable, Hashable {
     )
     case syncFailed(String
     )
+    case pendingUploadVerificationChanged(pending: Bool
+    )
 
 
 
@@ -17937,6 +18071,9 @@ public struct FfiConverterTypeCloudBackupReconcileMessage: FfiConverterRustBuffe
         case 5: return .syncFailed(try FfiConverterString.read(from: &buf)
         )
         
+        case 6: return .pendingUploadVerificationChanged(pending: try FfiConverterBool.read(from: &buf)
+        )
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -17968,6 +18105,11 @@ public struct FfiConverterTypeCloudBackupReconcileMessage: FfiConverterRustBuffe
         case let .syncFailed(v1):
             writeInt(&buf, Int32(5))
             FfiConverterString.write(v1, into: &buf)
+            
+        
+        case let .pendingUploadVerificationChanged(pending):
+            writeInt(&buf, Int32(6))
+            FfiConverterBool.write(pending, into: &buf)
             
         }
     }
@@ -22916,6 +23058,268 @@ public func FfiConverterTypeNumberOfBip39Words_lower(_ value: NumberOfBip39Words
 
 
 
+
+public enum OnboardingAction: Equatable, Hashable {
+    
+    case acceptTerms
+    case cloudCheckComplete(hasBackup: Bool
+    )
+    case skipRestore
+    case startRestore
+    case restoreComplete
+    case restoreFailed(error: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension OnboardingAction: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOnboardingAction: FfiConverterRustBuffer {
+    typealias SwiftType = OnboardingAction
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OnboardingAction {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .acceptTerms
+        
+        case 2: return .cloudCheckComplete(hasBackup: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 3: return .skipRestore
+        
+        case 4: return .startRestore
+        
+        case 5: return .restoreComplete
+        
+        case 6: return .restoreFailed(error: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: OnboardingAction, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .acceptTerms:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .cloudCheckComplete(hasBackup):
+            writeInt(&buf, Int32(2))
+            FfiConverterBool.write(hasBackup, into: &buf)
+            
+        
+        case .skipRestore:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .startRestore:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .restoreComplete:
+            writeInt(&buf, Int32(5))
+        
+        
+        case let .restoreFailed(error):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(error, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingAction_lift(_ buf: RustBuffer) throws -> OnboardingAction {
+    return try FfiConverterTypeOnboardingAction.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingAction_lower(_ value: OnboardingAction) -> RustBuffer {
+    return FfiConverterTypeOnboardingAction.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum OnboardingReconcileMessage: Equatable, Hashable {
+    
+    case stepChanged(OnboardingStep
+    )
+    case complete
+    case restoreError(String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension OnboardingReconcileMessage: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOnboardingReconcileMessage: FfiConverterRustBuffer {
+    typealias SwiftType = OnboardingReconcileMessage
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OnboardingReconcileMessage {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .stepChanged(try FfiConverterTypeOnboardingStep.read(from: &buf)
+        )
+        
+        case 2: return .complete
+        
+        case 3: return .restoreError(try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: OnboardingReconcileMessage, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .stepChanged(v1):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeOnboardingStep.write(v1, into: &buf)
+            
+        
+        case .complete:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .restoreError(v1):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(v1, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingReconcileMessage_lift(_ buf: RustBuffer) throws -> OnboardingReconcileMessage {
+    return try FfiConverterTypeOnboardingReconcileMessage.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingReconcileMessage_lower(_ value: OnboardingReconcileMessage) -> RustBuffer {
+    return FfiConverterTypeOnboardingReconcileMessage.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum OnboardingStep: Equatable, Hashable {
+    
+    case terms
+    case cloudCheck
+    case restoreOffer
+    case restoring
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension OnboardingStep: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOnboardingStep: FfiConverterRustBuffer {
+    typealias SwiftType = OnboardingStep
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OnboardingStep {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .terms
+        
+        case 2: return .cloudCheck
+        
+        case 3: return .restoreOffer
+        
+        case 4: return .restoring
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: OnboardingStep, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .terms:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .cloudCheck:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .restoreOffer:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .restoring:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingStep_lift(_ buf: RustBuffer) throws -> OnboardingStep {
+    return try FfiConverterTypeOnboardingStep.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingStep_lower(_ value: OnboardingStep) -> RustBuffer {
+    return FfiConverterTypeOnboardingStep.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum PendingOrConfirmed: Equatable, Hashable {
     
@@ -31034,6 +31438,137 @@ public func FfiConverterCallbackInterfaceImportWalletManagerReconciler_lower(_ v
 
 
 
+public protocol OnboardingManagerReconciler: AnyObject, Sendable {
+    
+    func reconcile(message: OnboardingReconcileMessage) 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceOnboardingManagerReconciler {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceOnboardingManagerReconciler = UniffiVTableCallbackInterfaceOnboardingManagerReconciler(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceOnboardingManagerReconciler.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface OnboardingManagerReconciler: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceOnboardingManagerReconciler.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface OnboardingManagerReconciler: handle missing in uniffiClone")
+            }
+        },
+        reconcile: { (
+            uniffiHandle: UInt64,
+            message: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceOnboardingManagerReconciler.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.reconcile(
+                     message: try FfiConverterTypeOnboardingReconcileMessage_lift(message)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceOnboardingManagerReconciler> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceOnboardingManagerReconciler>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitOnboardingManagerReconciler() {
+    uniffi_cove_fn_init_callback_vtable_onboardingmanagerreconciler(UniffiCallbackInterfaceOnboardingManagerReconciler.vtablePtr)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceOnboardingManagerReconciler {
+    fileprivate static let handleMap = UniffiHandleMap<OnboardingManagerReconciler>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceOnboardingManagerReconciler : FfiConverter {
+    typealias SwiftType = OnboardingManagerReconciler
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceOnboardingManagerReconciler_lift(_ handle: UInt64) throws -> OnboardingManagerReconciler {
+    return try FfiConverterCallbackInterfaceOnboardingManagerReconciler.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceOnboardingManagerReconciler_lower(_ v: OnboardingManagerReconciler) -> UInt64 {
+    return FfiConverterCallbackInterfaceOnboardingManagerReconciler.lower(v)
+}
+
+
+
+
 public protocol PendingWalletManagerReconciler: AnyObject, Sendable {
     
     /**
@@ -33196,6 +33731,15 @@ public func setRootDataDir(path: String)throws   {try rustCallWithError(FfiConve
 }
 }
 /**
+ * Initialize the global App instance (Updater, router, state)
+ * Must be called after storage bootstrap completes
+ */
+public func initializeApp()  {try! rustCall() {
+    uniffi_cove_fn_func_initialize_app($0
+    )
+}
+}
+/**
  * Async bootstrap: initializes the tokio runtime, runs critical storage bootstrap
  * (encryption key derivation + redb migrations) on a blocking thread, then
  * attempts BDK migration. BDK migration failures are non-blocking — the app
@@ -33583,6 +34127,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.contractVersionMismatch
     }
     if (uniffi_cove_checksum_func_set_root_data_dir() != 56109) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_func_initialize_app() != 18498) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_func_bootstrap() != 30405) {
@@ -34122,10 +34669,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_debug_reset_cloud_backup_state() != 45375) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_delete_legacy_flat_backup() != 54663) {
+    if (uniffi_cove_checksum_method_rustcloudbackupmanager_enable_cloud_backup() != 15551) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_checksum_method_rustcloudbackupmanager_enable_cloud_backup() != 10377) {
+    if (uniffi_cove_checksum_method_rustcloudbackupmanager_has_pending_cloud_upload_verification() != 4437) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_is_cloud_backup_enabled() != 34679) {
@@ -34138,6 +34685,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_restore_from_cloud_backup() != 40792) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_method_rustcloudbackupmanager_resume_pending_cloud_upload_verification() != 24590) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_sync_persisted_state() != 19758) {
@@ -34177,6 +34727,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustimportwalletmanager_listen_for_updates() != 12813) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_method_rustonboardingmanager_dispatch() != 60436) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_method_rustonboardingmanager_listen_for_updates() != 1994) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustpendingwalletmanager_bip_39_words() != 13908) {
@@ -34821,6 +35377,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_checksum_constructor_rustimportwalletmanager_new() != 12433) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_cove_checksum_constructor_rustonboardingmanager_new() != 42858) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_cove_checksum_constructor_rustpendingwalletmanager_new() != 1933) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -34950,6 +35509,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_checksum_method_importwalletmanagerreconciler_reconcile() != 13279) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_cove_checksum_method_onboardingmanagerreconciler_reconcile() != 13047) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_cove_checksum_method_pendingwalletmanagerreconciler_reconcile() != 54948) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -34982,6 +35544,7 @@ private let initializationResult: InitializationResult = {
     uniffiCallbackInitCoinControlManagerReconciler()
     uniffiCallbackInitFfiReconcile()
     uniffiCallbackInitImportWalletManagerReconciler()
+    uniffiCallbackInitOnboardingManagerReconciler()
     uniffiCallbackInitPendingWalletManagerReconciler()
     uniffiCallbackInitSendFlowManagerReconciler()
     uniffiCallbackInitTapcardTransportProtocol()

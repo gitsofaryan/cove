@@ -41,15 +41,13 @@ struct CoveApp: App {
     enum StartupState {
         case loading
         case ready(AppManager, AuthManager)
+        case onboarding(AppManager, AuthManager)
         case catastrophicError
-        case restoring
-        case offerCloudRestore
         case fatalError(String)
     }
 
     @State private var startupState: StartupState = .loading
     @State private var bdkMigrationWarning: String?
-    @State private var cloudCheckError: String?
 
     init() {
         _ = Keychain(keychain: KeychainAccessor())
@@ -79,29 +77,22 @@ struct CoveApp: App {
                     CoverView(errorMessage: nil)
                 case let .ready(app, auth):
                     CoveMainView(app: app, auth: auth)
+                case let .onboarding(app, auth):
+                    OnboardingContainer(manager: OnboardingManager(app: app)) {
+                        startupState = .ready(app, auth)
+                        startBackupIntegrityCheck()
+                    }
                 case .catastrophicError:
                     CatastrophicErrorView(
                         onRestoreFromCloud: {
-                            startupState = .restoring
+                            startupState = .loading
+                            wipeLocalData()
+                            reinitDatabase()
+                            rebootstrap()
                         },
                         onWipeOnly: {
+                            reinitDatabase()
                             rebootstrap()
-                        }
-                    )
-                case .restoring:
-                    DeviceRestoreView(
-                        onComplete: {
-                            completeBootstrap(skipCloudCheck: true)
-                        },
-                        onError: { _ in }
-                    )
-                case .offerCloudRestore:
-                    CloudRestoreOfferView(
-                        onRestore: {
-                            startupState = .restoring
-                        },
-                        onSkip: {
-                            finishBootstrap()
                         }
                     )
                 case let .fatalError(message):
@@ -128,17 +119,6 @@ struct CoveApp: App {
                 Text(
                     "Some wallet databases couldn't be encrypted. Your wallets still work and encryption will retry on next launch.\n\nIf this persists, please contact feedback@covebitcoinwallet.com"
                 )
-            }
-            .alert(
-                "Cloud Backup Check",
-                isPresented: Binding(
-                    get: { cloudCheckError != nil },
-                    set: { if !$0 { cloudCheckError = nil } }
-                )
-            ) {
-                Button("OK") { cloudCheckError = nil }
-            } message: {
-                Text(cloudCheckError ?? "")
             }
         }
     }
@@ -230,61 +210,35 @@ extension CoveApp {
         }
     }
 
-    private func completeBootstrap(warning: String? = nil, skipCloudCheck: Bool = false) {
-        Log.info("[STARTUP] completeBootstrap called, skipCloudCheck=\(skipCloudCheck)")
-        CloudBackupManager.shared.rust.syncPersistedState()
+    private func completeBootstrap(warning: String? = nil) {
+        Log.info("[STARTUP] completeBootstrap called")
 
-        let backupState = CloudBackupManager.shared.state
-        Log.info("[STARTUP] backupState=\(backupState)")
-
-        // fresh install with no existing backup enabled and no local wallets — check if cloud has a backup
-        if !skipCloudCheck, case .disabled = backupState,
-           (try? Database().wallets().hasAnyWallets()) == false
-        {
-            Log.info("[STARTUP] entering cloud check branch")
-            Task.detached {
-                do {
-                    Log.info("[STARTUP] checking iCloud availability")
-                    guard FileManager.default.ubiquityIdentityToken != nil else {
-                        Log.info("[STARTUP] iCloud not available, skipping cloud check")
-                        await MainActor.run { self.finishBootstrap(warning: warning) }
-                        return
-                    }
-
-                    let cloud = CloudStorage(cloudStorage: CloudStorageAccessImpl())
-                    Log.info("[STARTUP] calling hasAnyCloudBackup")
-                    let hasBackup = try cloud.hasAnyCloudBackup()
-                    Log.info("[STARTUP] hasAnyCloudBackup returned: \(hasBackup)")
-                    await MainActor.run {
-                        if hasBackup {
-                            self.startupState = .offerCloudRestore
-                        } else {
-                            self.finishBootstrap(warning: warning)
-                        }
-                    }
-                } catch {
-                    Log.warn("[STARTUP] cloud backup check failed: \(error)")
-                    await MainActor.run {
-                        self.finishBootstrap(warning: warning)
-                    }
-                }
-            }
-            return
-        }
-
-        Log.info("[STARTUP] skipping cloud check, calling finishBootstrap directly")
-        finishBootstrap(warning: warning)
-    }
-
-    private func finishBootstrap(warning: String? = nil) {
-        Log.info("[STARTUP] finishBootstrap called")
+        // unconditional initialization — everything ready before any user interaction
+        initializeApp()
         let appManager = AppManager.shared
         appManager.asyncRuntimeReady = true
-
-        self.startupState = .ready(appManager, AuthManager.shared)
+        CloudBackupManager.shared.rust.syncPersistedState()
         self.bdkMigrationWarning = warning
         startInitData(appManager)
-        startBackupIntegrityCheck()
+
+        let needsOnboarding = !appManager.isTermsAccepted
+            || needsCloudRestoreOffer(appManager: appManager)
+
+        if needsOnboarding {
+            Log.info("[STARTUP] entering onboarding flow")
+            self.startupState = .onboarding(appManager, AuthManager.shared)
+        } else {
+            Log.info("[STARTUP] going to ready state")
+            self.startupState = .ready(appManager, AuthManager.shared)
+            startBackupIntegrityCheck()
+        }
+    }
+
+    private func needsCloudRestoreOffer(appManager: AppManager) -> Bool {
+        guard case .disabled = CloudBackupManager.shared.state else { return false }
+        guard !appManager.hasWallets else { return false }
+        guard FileManager.default.ubiquityIdentityToken != nil else { return false }
+        return true
     }
 
     /// Re-bootstrap after recovery (Start Fresh / Wipe / Cloud Restore)
@@ -310,15 +264,19 @@ extension CoveApp {
 
     /// Background check that cloud backup files and keychain master key are intact
     private func startBackupIntegrityCheck() {
-        guard FileManager.default.ubiquityIdentityToken != nil else { return }
+        Task {
+            let isICloudAvailable = await MainActor.run {
+                FileManager.default.ubiquityIdentityToken != nil
+            }
+            guard isICloudAvailable else { return }
 
-        Task.detached {
-            let warning = CloudBackupManager.shared.rust.verifyBackupIntegrity()
+            CloudBackupManager.shared.rust.resumePendingCloudUploadVerification()
+
+            let warning = await Task.detached {
+                CloudBackupManager.shared.rust.verifyBackupIntegrity()
+            }.value
             if let warning {
                 Log.error("[STARTUP] backup integrity warning: \(warning)")
-                await MainActor.run {
-                    self.cloudCheckError = warning
-                }
             }
         }
     }

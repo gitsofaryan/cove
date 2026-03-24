@@ -12,11 +12,13 @@ final class CloudBackupManager: CloudBackupManagerReconciler, @unchecked Sendabl
     var progress: (completed: UInt32, total: UInt32)?
     var restoreReport: CloudBackupRestoreReport?
     var syncError: String?
+    var hasPendingUploadVerification = false
 
     private init() {
         self.rust = RustCloudBackupManager()
         self.rust.listenForUpdates(reconciler: self)
         self.state = self.rust.currentState()
+        self.hasPendingUploadVerification = self.rust.hasPendingCloudUploadVerification()
     }
 
     func reconcile(message: CloudBackupReconcileMessage) {
@@ -35,6 +37,8 @@ final class CloudBackupManager: CloudBackupManagerReconciler, @unchecked Sendabl
                 self.progress = nil
             case let .syncFailed(error):
                 self.syncError = error
+            case let .pendingUploadVerificationChanged(pending):
+                self.hasPendingUploadVerification = pending
             }
         }
     }
