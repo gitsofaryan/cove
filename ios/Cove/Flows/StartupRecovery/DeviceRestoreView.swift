@@ -6,10 +6,6 @@ struct DeviceRestoreView: View {
     let onComplete: () -> Void
     let onError: (String) -> Void
 
-    /// When true, the view triggers restoreFromCloudBackup itself
-    /// When false, the caller is responsible for triggering the restore
-    var triggerRestore: Bool = true
-
     enum RestorePhase: Equatable {
         case restoring(progress: (completed: UInt32, total: UInt32)? = nil)
         case complete(CloudBackupRestoreReport)
@@ -246,10 +242,7 @@ struct DeviceRestoreView: View {
         }
 
         phase = .restoring()
-        if triggerRestore {
-            backupManager.rust.restoreFromCloudBackup()
-        }
-
+        backupManager.rust.restoreFromCloudBackup()
         await observeRestoreCompletion()
     }
 

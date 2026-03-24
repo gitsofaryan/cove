@@ -71,60 +71,63 @@ struct CoveApp: App {
 
     var body: some Scene {
         WindowGroup {
-            Group {
-                switch startupState {
-                case .loading:
-                    CoverView(errorMessage: nil)
-                case let .ready(app, auth):
-                    CoveMainView(app: app, auth: auth)
-                case let .onboarding(app, auth):
-                    OnboardingContainer(manager: OnboardingManager(app: app)) {
-                        startupState = .ready(app, auth)
-                        startBackupIntegrityCheck()
+            startupContent
+                .task {
+                    do {
+                        let warning = try await bootstrapWithTimeout()
+                        completeBootstrap(warning: warning)
+                    } catch {
+                        handleBootstrapError(error)
                     }
-                case .catastrophicError:
-                    CatastrophicErrorView(
-                        onRestoreFromCloud: {
-                            startupState = .loading
-                            wipeLocalData()
-                            reinitDatabase()
-                            rebootstrap()
-                        },
-                        onWipeOnly: {
-                            reinitDatabase()
-                            rebootstrap()
-                        }
+                }
+                .alert(
+                    "Encryption Migration Issue",
+                    isPresented: Binding(
+                        get: { bdkMigrationWarning != nil },
+                        set: { if !$0 { bdkMigrationWarning = nil } }
                     )
-                case let .fatalError(message):
-                    CoverView(errorMessage: message)
+                ) {
+                    Button("OK") { bdkMigrationWarning = nil }
+                } message: {
+                    Text(
+                        "Some wallet databases couldn't be encrypted. Your wallets still work and encryption will retry on next launch.\n\nIf this persists, please contact feedback@covebitcoinwallet.com"
+                    )
                 }
-            }
-            .task {
-                do {
-                    let warning = try await bootstrapWithTimeout()
-                    completeBootstrap(warning: warning)
-                } catch {
-                    handleBootstrapError(error)
-                }
-            }
-            .alert(
-                "Encryption Migration Issue",
-                isPresented: Binding(
-                    get: { bdkMigrationWarning != nil },
-                    set: { if !$0 { bdkMigrationWarning = nil } }
-                )
-            ) {
-                Button("OK") { bdkMigrationWarning = nil }
-            } message: {
-                Text(
-                    "Some wallet databases couldn't be encrypted. Your wallets still work and encryption will retry on next launch.\n\nIf this persists, please contact feedback@covebitcoinwallet.com"
-                )
-            }
         }
     }
 }
 
 extension CoveApp {
+    @ViewBuilder
+    private var startupContent: some View {
+        switch startupState {
+        case .loading:
+            CoverView(errorMessage: nil)
+        case let .ready(app, auth):
+            CoveMainView(app: app, auth: auth)
+        case let .onboarding(app, auth):
+            OnboardingContainer(manager: OnboardingManager(app: app)) {
+                startupState = .ready(app, auth)
+                startBackupIntegrityCheck()
+            }
+        case .catastrophicError:
+            CatastrophicErrorView(
+                onRestoreFromCloud: {
+                    startupState = .loading
+                    wipeLocalData()
+                    reinitDatabase()
+                    rebootstrap()
+                },
+                onWipeOnly: {
+                    reinitDatabase()
+                    rebootstrap()
+                }
+            )
+        case let .fatalError(message):
+            CoverView(errorMessage: message)
+        }
+    }
+
     private func bootstrapWithTimeout() async throws -> String? {
         try await withThrowingTaskGroup(of: BootstrapResult.self) { group in
             group.addTask { try await .completed(warning: bootstrap()) }

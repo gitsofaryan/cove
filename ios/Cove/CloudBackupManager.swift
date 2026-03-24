@@ -3,11 +3,15 @@ import Foundation
 @_exported import CoveCore
 import SwiftUI
 
+extension WeakReconciler: CloudBackupManagerReconciler where Reconciler == CloudBackupManager {}
+
 @Observable
-final class CloudBackupManager: CloudBackupManagerReconciler, @unchecked Sendable {
+final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @unchecked Sendable {
     static let shared = CloudBackupManager()
 
-    let rust: RustCloudBackupManager
+    typealias Message = CloudBackupReconcileMessage
+
+    @ObservationIgnored let rust: RustCloudBackupManager
     var state: CloudBackupState = .disabled
     var progress: (completed: UInt32, total: UInt32)?
     var restoreReport: CloudBackupRestoreReport?
@@ -15,31 +19,40 @@ final class CloudBackupManager: CloudBackupManagerReconciler, @unchecked Sendabl
     var hasPendingUploadVerification = false
 
     private init() {
-        self.rust = RustCloudBackupManager()
-        self.rust.listenForUpdates(reconciler: self)
-        self.state = self.rust.currentState()
-        self.hasPendingUploadVerification = self.rust.hasPendingCloudUploadVerification()
+        let rust = RustCloudBackupManager()
+        self.rust = rust
+        rust.listenForUpdates(reconciler: WeakReconciler(self))
+        state = rust.currentState()
+        hasPendingUploadVerification = rust.hasPendingCloudUploadVerification()
     }
 
-    func reconcile(message: CloudBackupReconcileMessage) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+    private func apply(_ message: Message) {
+        switch message {
+        case let .stateChanged(newState):
+            state = newState
+        case let .progressUpdated(completed, total):
+            progress = (completed, total)
+        case .enableComplete:
+            progress = nil
+        case let .restoreComplete(report):
+            restoreReport = report
+            progress = nil
+        case let .syncFailed(error):
+            syncError = error
+        case let .pendingUploadVerificationChanged(pending):
+            hasPendingUploadVerification = pending
+        }
+    }
 
-            switch message {
-            case let .stateChanged(newState):
-                self.state = newState
-            case let .progressUpdated(completed, total):
-                self.progress = (completed, total)
-            case .enableComplete:
-                self.progress = nil
-            case let .restoreComplete(report):
-                self.restoreReport = report
-                self.progress = nil
-            case let .syncFailed(error):
-                self.syncError = error
-            case let .pendingUploadVerificationChanged(pending):
-                self.hasPendingUploadVerification = pending
-            }
+    func reconcile(message: Message) {
+        DispatchQueue.main.async { [weak self] in
+            self?.apply(message)
+        }
+    }
+
+    func reconcileMany(messages: [Message]) {
+        DispatchQueue.main.async { [weak self] in
+            messages.forEach { self?.apply($0) }
         }
     }
 }

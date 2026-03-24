@@ -80,12 +80,8 @@ struct OnboardingContainer: View {
         case .restoring:
             DeviceRestoreView(
                 onComplete: { manager.dispatch(.restoreComplete) },
-                onError: { error in manager.dispatch(.restoreFailed(error: error)) },
-                triggerRestore: false
+                onError: { error in manager.dispatch(.restoreFailed(error: error)) }
             )
-            .task {
-                CloudBackupManager.shared.rust.restoreFromCloudBackup()
-            }
         }
     }
 }

@@ -43,13 +43,14 @@ struct CloudBackupDetailScreen: View {
         .navigationTitle("Cloud Backup")
         .navigationBarTitleDisplayMode(.inline)
         .task {
+            refreshSyncHealth()
             manager.dispatch(.startVerification)
         }
         .onChange(of: manager.detail) { _, _ in
-            syncHealth = ICloudDriveHelper.shared.overallSyncHealth()
+            refreshSyncHealth()
         }
         .onChange(of: manager.verification) { _, _ in
-            syncHealth = ICloudDriveHelper.shared.overallSyncHealth()
+            refreshSyncHealth()
         }
         .confirmationDialog(
             "Recreate Backup Index",
@@ -91,6 +92,10 @@ struct CloudBackupDetailScreen: View {
     private var isCancelled: Bool {
         if case .cancelled = manager.verification { return true }
         return false
+    }
+
+    private func refreshSyncHealth() {
+        syncHealth = ICloudDriveHelper.shared.overallSyncHealth()
     }
 }
 
@@ -219,65 +224,13 @@ private struct VerificationSection: View {
         Section {
             switch failure {
             case let .retry(message, _):
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-
-                retryButton
-                repairPasskeyButton
-
+                retryFailureContent(message)
             case let .recreateManifest(message, _, warning):
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-
-                Text(warning)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Button(role: .destructive) {
-                    onRecreate()
-                } label: {
-                    if isRecovering {
-                        HStack {
-                            ProgressView()
-                                .padding(.trailing, 4)
-                            Text("Recreating...")
-                        }
-                    } else {
-                        Label("Recreate Backup Index", systemImage: "arrow.clockwise")
-                    }
-                }
-                .disabled(isBusy)
-
+                recreateManifestContent(message: message, warning: warning)
             case let .reinitializeBackup(message, _, warning):
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-
-                Text(warning)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Button(role: .destructive) {
-                    onReinitialize()
-                } label: {
-                    if isRecovering {
-                        HStack {
-                            ProgressView()
-                                .padding(.trailing, 4)
-                            Text("Reinitializing...")
-                        }
-                    } else {
-                        Label("Reinitialize Cloud Backup", systemImage: "arrow.counterclockwise")
-                    }
-                }
-                .disabled(isBusy)
-
+                reinitializeBackupContent(message: message, warning: warning)
             case let .unsupportedVersion(message, _):
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-
-                Text("Please update the app to the latest version")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                unsupportedVersionContent(message)
             }
         }
 
@@ -288,6 +241,81 @@ private struct VerificationSection: View {
                     .font(.caption)
             }
         }
+    }
+
+    @ViewBuilder
+    private func retryFailureContent(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(.orange)
+
+        retryButton
+        repairPasskeyButton
+    }
+
+    @ViewBuilder
+    private func recreateManifestContent(message: String, warning: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(.red)
+
+        Text(warning)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        destructiveActionButton(
+            title: "Recreate Backup Index",
+            progressTitle: "Recreating...",
+            systemImage: "arrow.clockwise",
+            action: onRecreate
+        )
+    }
+
+    @ViewBuilder
+    private func reinitializeBackupContent(message: String, warning: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(.red)
+
+        Text(warning)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        destructiveActionButton(
+            title: "Reinitialize Cloud Backup",
+            progressTitle: "Reinitializing...",
+            systemImage: "arrow.counterclockwise",
+            action: onReinitialize
+        )
+    }
+
+    @ViewBuilder
+    private func unsupportedVersionContent(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(.orange)
+
+        Text("Please update the app to the latest version")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private func destructiveActionButton(
+        title: String,
+        progressTitle: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: .destructive) {
+            action()
+        } label: {
+            if isRecovering {
+                HStack {
+                    ProgressView()
+                        .padding(.trailing, 4)
+                    Text(progressTitle)
+                }
+            } else {
+                Label(title, systemImage: systemImage)
+            }
+        }
+        .disabled(isBusy)
     }
 
     private var actionButtons: some View {
