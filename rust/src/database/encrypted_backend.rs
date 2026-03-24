@@ -16,29 +16,15 @@ use tracing::error;
 
 /// Typed marker for unsupported database version errors, embedded inside `io::Error`
 /// so `io_err_to_db_error` can downcast instead of string-matching
-#[derive(Debug)]
+#[derive(Debug, derive_more::Display, thiserror::Error)]
+#[display("unsupported encrypted database version: {_0}")]
 struct UnsupportedDatabaseVersion(u8);
-
-impl fmt::Display for UnsupportedDatabaseVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unsupported encrypted database version: {}", self.0)
-    }
-}
-
-impl std::error::Error for UnsupportedDatabaseVersion {}
 
 /// Typed marker for HMAC mismatch errors, embedded inside `io::Error`
 /// so `io_err_to_db_error` can downcast instead of string-matching
-#[derive(Debug)]
+#[derive(Debug, derive_more::Display, thiserror::Error)]
+#[display("header integrity check failed: HMAC mismatch (wrong key or corrupted header)")]
 struct HmacMismatch;
-
-impl fmt::Display for HmacMismatch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "header integrity check failed: HMAC mismatch (wrong key or corrupted header)")
-    }
-}
-
-impl std::error::Error for HmacMismatch {}
 
 const BLOCK_SIZE: usize = 4096;
 const NONCE_LEN: usize = 24;
@@ -326,7 +312,7 @@ impl EncryptedBackend {
 /// Returns Ok(()) if the key is valid or the file doesn't exist.
 /// Returns Err(HeaderIntegrity) on key mismatch
 pub fn verify_database_key(path: &Path) -> Result<(), super::error::DatabaseError> {
-    use super::error::DatabaseError;
+    use super::error::{DatabaseError, UnsupportedDbVersion};
 
     if !path.exists() {
         return Ok(());
@@ -354,7 +340,10 @@ pub fn verify_database_key(path: &Path) -> Result<(), super::error::DatabaseErro
         }
         VERSION_V1 => verify_v1_database_key(&file, &path_str, &key)?,
         version => {
-            return Err(DatabaseError::UnsupportedVersion { path: path_str, version });
+            return Err(DatabaseError::UnsupportedVersion(UnsupportedDbVersion {
+                path: path_str,
+                version,
+            }));
         }
     }
 
@@ -387,13 +376,16 @@ pub fn open_or_create_database(path: &Path) -> Result<redb::Database, super::err
 
 /// Map an io::Error to the appropriate DatabaseError variant
 fn io_err_to_db_error(path: &str, e: io::Error) -> super::error::DatabaseError {
-    use super::error::DatabaseError;
+    use super::error::{DatabaseError, UnsupportedDbVersion};
 
     // downcast typed inner errors before falling back to error kind
     if let Some(v) =
         e.get_ref().and_then(|inner| inner.downcast_ref::<UnsupportedDatabaseVersion>())
     {
-        return DatabaseError::UnsupportedVersion { path: path.to_string(), version: v.0 };
+        return DatabaseError::UnsupportedVersion(UnsupportedDbVersion {
+            path: path.to_string(),
+            version: v.0,
+        });
     }
     if e.get_ref().is_some_and(|inner| inner.is::<HmacMismatch>()) {
         return DatabaseError::HeaderIntegrity { path: path.to_string(), error: e.to_string() };

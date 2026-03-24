@@ -4,6 +4,13 @@ mod v1_redb;
 use std::path::Path;
 use tracing::warn;
 
+#[derive(Debug, derive_more::Display)]
+#[display("{db_path}: {error}")]
+pub(super) struct MigrationFailure {
+    pub db_path: String,
+    pub error: String,
+}
+
 pub fn log_remove_file(path: &Path) {
     match std::fs::remove_file(path) {
         Ok(()) => {}

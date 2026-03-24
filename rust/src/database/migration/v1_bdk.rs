@@ -11,7 +11,7 @@ use crate::bdk_store::sqlite_auxiliary_path;
 use crate::bootstrap::Migration;
 use cove_common::consts::ROOT_DATA_DIR;
 
-use super::log_remove_file;
+use super::{MigrationFailure, log_remove_file};
 
 #[derive(Debug, thiserror::Error)]
 enum BdkMigrationError {
@@ -19,10 +19,7 @@ enum BdkMigrationError {
     Cancelled,
 
     #[error("failed to migrate {} BDK database(s)", .failures.len())]
-    Failed {
-        /// (db_path_display, error_message)
-        failures: Vec<(String, String)>,
-    },
+    Failed { failures: Vec<MigrationFailure> },
 }
 
 pub struct BdkMigration {
@@ -44,7 +41,7 @@ impl BdkMigration {
             }
         };
 
-        let mut failures: Vec<(String, String)> = Vec::new();
+        let mut failures: Vec<MigrationFailure> = Vec::new();
 
         for entry in entries {
             if self.migration.is_cancelled() {
@@ -63,7 +60,10 @@ impl BdkMigration {
                     Ok(()) => self.migration.tick(),
                     Err(e) => {
                         error!("Failed to migrate BDK database {db_display}: {e:#}");
-                        failures.push((db_display, format!("{e:#}")));
+                        failures.push(MigrationFailure {
+                            db_path: db_display,
+                            error: format!("{e:#}"),
+                        });
 
                         // tick even on failure to keep progress bar advancing and prevent watchdog timeout
                         self.migration.tick();
@@ -841,7 +841,7 @@ mod tests {
         match migration_err {
             BdkMigrationError::Failed { failures } => {
                 assert!(
-                    failures.iter().any(|(path, _)| path.contains("bdk_wallet_sqlite_bad.db")),
+                    failures.iter().any(|f| f.db_path.contains("bdk_wallet_sqlite_bad.db")),
                     "error should mention the bad DB"
                 );
             }

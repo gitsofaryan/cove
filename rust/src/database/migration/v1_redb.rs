@@ -10,7 +10,7 @@ use crate::bootstrap::Migration;
 use crate::database::encrypted_backend::EncryptedBackend;
 use cove_common::consts::{ROOT_DATA_DIR, WALLET_DATA_DIR};
 
-use super::log_remove_file;
+use super::{MigrationFailure, log_remove_file};
 
 #[derive(Debug, thiserror::Error)]
 enum WalletMigrationError {
@@ -18,10 +18,7 @@ enum WalletMigrationError {
     Cancelled,
 
     #[error("failed to migrate {} wallet database(s)", .failures.len())]
-    Failed {
-        /// (db_path_display, error_message)
-        failures: Vec<(String, String)>,
-    },
+    Failed { failures: Vec<MigrationFailure> },
 }
 
 const LEGACY_MAIN_DB: &str = "cove.db";
@@ -520,7 +517,7 @@ impl WalletMigration {
             }
         };
 
-        let mut failures: Vec<(String, String)> = Vec::new();
+        let mut failures: Vec<MigrationFailure> = Vec::new();
 
         for entry in entries {
             if self.migration.is_cancelled() {
@@ -538,7 +535,10 @@ impl WalletMigration {
                     Ok(()) => self.migration.tick(),
                     Err(e) => {
                         error!("Failed to migrate wallet database {db_display}: {e:#}");
-                        failures.push((db_display, format!("{e:#}")));
+                        failures.push(MigrationFailure {
+                            db_path: db_display,
+                            error: format!("{e:#}"),
+                        });
                         // tick even on failure to keep progress bar advancing and prevent watchdog timeout
                         self.migration.tick();
                     }
@@ -551,7 +551,8 @@ impl WalletMigration {
                 info!("Legacy wallet DB at {db_display} already encrypted, renaming");
                 if let Err(e) = std::fs::rename(&source_db, &dest_db) {
                     error!("Failed to rename already-encrypted wallet DB {db_display}: {e:#}");
-                    failures.push((db_display, format!("{e:#}")));
+                    failures
+                        .push(MigrationFailure { db_path: db_display, error: format!("{e:#}") });
                 }
                 self.migration.tick();
             }
@@ -1210,7 +1211,7 @@ mod tests {
         match migration_err {
             WalletMigrationError::Failed { failures } => {
                 assert!(
-                    failures.iter().any(|(path, _)| path.contains("wallet_bad")),
+                    failures.iter().any(|f| f.db_path.contains("wallet_bad")),
                     "error should mention the bad wallet"
                 );
             }

@@ -4,6 +4,13 @@ use super::{
     unsigned_transactions::UnsignedTransactionsTableError, wallet::WalletTableError,
 };
 
+#[derive(Debug, Clone, Hash, Eq, PartialEq, derive_more::Display, uniffi::Record)]
+#[display("unsupported encrypted database version {version} at {path}")]
+pub struct UnsupportedDbVersion {
+    pub path: String,
+    pub version: u8,
+}
+
 type Error = DatabaseError;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, uniffi::Error, thiserror::Error)]
@@ -67,8 +74,8 @@ pub enum DatabaseError {
     #[error("header integrity check failed at {path}: {error}")]
     HeaderIntegrity { path: String, error: String },
 
-    #[error("unsupported encrypted database version {version} at {path}")]
-    UnsupportedVersion { path: String, version: u8 },
+    #[error("{0}")]
+    UnsupportedVersion(UnsupportedDbVersion),
 
     #[error("database at {path} is not encrypted; migration may not have completed")]
     PlaintextNotAllowed { path: String },
