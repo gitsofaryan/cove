@@ -192,6 +192,7 @@ struct DeviceRestoreView: View {
                     total: Double(max(progress.total, 1))
                 )
                 .tint(.btnGradientLight)
+                .animation(.easeInOut(duration: 0.3), value: progress.completed)
             } else {
                 ProgressView()
                     .tint(.white)
@@ -269,6 +270,13 @@ struct DeviceRestoreView: View {
             switch currentState {
             case .enabled:
                 if let report {
+                    // show progress at 100% before transitioning
+                    if let currentProgress {
+                        phase = .restoring(progress: (currentProgress.total, currentProgress.total))
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+
+                    backupManager.progress = nil
                     phase = .complete(report)
                     try? await Task.sleep(for: .seconds(1))
                     onComplete()

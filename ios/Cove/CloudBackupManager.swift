@@ -39,7 +39,6 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
             progress = nil
         case let .restoreComplete(report):
             restoreReport = report
-            progress = nil
         case let .syncFailed(error):
             syncError = error
         case let .pendingUploadVerificationChanged(pending):

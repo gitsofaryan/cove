@@ -15,8 +15,9 @@ struct CloudRestoreOfferView: View {
             // decorative icon
             ZStack {
                 Circle()
-                    .fill(Color.duskBlue.opacity(0.5))
+                    .fill(Color.duskBlue.opacity(0.4))
                     .frame(width: 100, height: 100)
+                    .shadow(color: Color(red: 0.165, green: 0.353, blue: 0.545).opacity(0.5), radius: 30)
 
                 Circle()
                     .stroke(
@@ -29,8 +30,8 @@ struct CloudRestoreOfferView: View {
                     )
                     .frame(width: 100, height: 100)
 
-                Image(systemName: "person.badge.key")
-                    .font(.system(size: 40))
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 36, weight: .medium))
                     .foregroundStyle(.white)
             }
 
@@ -44,14 +45,14 @@ struct CloudRestoreOfferView: View {
             // title + subtitle
             VStack(spacing: 12) {
                 HStack {
-                    Text("Cloud Backup Found")
+                    Text("iCloud Backup Found")
                         .font(.system(size: 38, weight: .semibold))
                         .foregroundStyle(.white)
                     Spacer()
                 }
 
                 HStack {
-                    Text("A previous iCloud backup was found. Restore your wallets securely using your passkey")
+                    Text("A previous iCloud backup was found. Restore your wallet securely using your passkey.")
                         .font(.footnote)
                         .foregroundStyle(.coveLightGray.opacity(0.75))
                         .fixedSize(horizontal: false, vertical: true)
@@ -63,11 +64,28 @@ struct CloudRestoreOfferView: View {
 
             // passkey option card
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 12) {
+                Text("Recommended")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        LinearGradient(
+                            colors: [.btnGradientLight, .btnGradientDark],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        in: Capsule()
+                    )
+
+                HStack(spacing: 12) {
                     Image(systemName: "person.badge.key")
                         .font(.title3)
                         .foregroundStyle(Color.btnGradientLight)
-                        .frame(width: 28)
+                        .frame(width: 40, height: 40)
+                        .background(Color.btnGradientLight.opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Passkey Restore")
@@ -81,24 +99,9 @@ struct CloudRestoreOfferView: View {
                     }
 
                     Spacer()
-
-                    Text("Recommended")
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            LinearGradient(
-                                colors: [.btnGradientLight, .btnGradientDark],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            ),
-                            in: Capsule()
-                        )
                 }
 
-                Text("Your wallet data is encrypted and can only be decrypted with your passkey — no one else can access it, not even Apple")
+                Text("Your passkey is stored securely in iCloud Keychain and syncs across all your Apple devices.")
                     .font(.caption)
                     .foregroundStyle(.coveLightGray.opacity(0.60))
                     .fixedSize(horizontal: false, vertical: true)
@@ -140,32 +143,56 @@ struct CloudRestoreOfferView: View {
             Button {
                 onRestore()
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.down.circle")
-                    Text("Restore with Passkey")
-                }
+                Text("Restore with Passkey")
+                    .font(.footnote)
+                    .fontWeight(.medium)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                    .padding(.horizontal, 10)
+                    .background(Color.blue)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
-            .buttonStyle(PrimaryButtonStyle())
 
             Button {
                 onSkip()
             } label: {
-                Text("Skip — Start Fresh")
+                Text("Set Up as New")
                     .font(.subheadline)
-                    .foregroundStyle(.coveLightGray.opacity(0.75))
+                    .foregroundStyle(Color.btnGradientLight)
             }
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            Image(.newWalletPattern)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(height: screenHeight * 0.75, alignment: .topTrailing)
-                .frame(maxWidth: .infinity)
-                .opacity(0.75)
-        )
-        .background(Color.midnightBlue)
+        .background {
+            ZStack {
+                Color.midnightBlue
+
+                // large upper-center radial glow
+                RadialGradient(
+                    stops: [
+                        .init(color: Color(red: 0.165, green: 0.353, blue: 0.545).opacity(0.9), location: 0),
+                        .init(color: Color(red: 0.118, green: 0.227, blue: 0.361).opacity(0.4), location: 0.45),
+                        .init(color: .clear, location: 0.85),
+                    ],
+                    center: .init(x: 0.35, y: 0.18),
+                    startRadius: 0,
+                    endRadius: 400
+                )
+
+                // smaller right-offset radial glow
+                RadialGradient(
+                    stops: [
+                        .init(color: Color(red: 0.118, green: 0.290, blue: 0.420).opacity(0.8), location: 0),
+                        .init(color: .clear, location: 0.75),
+                    ],
+                    center: .init(x: 0.75, y: 0.12),
+                    startRadius: 0,
+                    endRadius: 300
+                )
+            }
+            .ignoresSafeArea()
+        }
         .animation(.easeInOut(duration: 0.3), value: errorMessage)
     }
 }
