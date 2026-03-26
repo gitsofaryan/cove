@@ -1,8 +1,9 @@
 use tracing::error;
 
 use super::cloud_backup_manager::{
-    CLOUD_BACKUP_MANAGER, CloudBackupWalletItem, DeepVerificationFailure, DeepVerificationReport,
-    DeepVerificationResult, RustCloudBackupManager,
+    CLOUD_BACKUP_MANAGER, CloudBackupError, CloudBackupReconcileMessage, CloudBackupWalletItem,
+    DeepVerificationFailure, DeepVerificationReport, DeepVerificationResult,
+    RustCloudBackupManager,
 };
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -69,7 +70,11 @@ impl RustCloudBackupManager {
     }
 
     pub fn repair_passkey(&self) {
-        CLOUD_BACKUP_MANAGER.clone().spawn_recovery(RecoveryAction::RepairPasskey);
+        CLOUD_BACKUP_MANAGER.clone().spawn_repair_passkey(false);
+    }
+
+    pub fn repair_passkey_no_discovery(&self) {
+        CLOUD_BACKUP_MANAGER.clone().spawn_repair_passkey(true);
     }
 
     pub fn sync_unsynced(&self) {
@@ -104,6 +109,10 @@ impl RustCloudBackupManager {
         cove_tokio::task::spawn_blocking(move || self.handle_recovery(action));
     }
 
+    fn spawn_repair_passkey(self: std::sync::Arc<Self>, no_discovery: bool) {
+        cove_tokio::task::spawn_blocking(move || self.handle_repair_passkey(no_discovery));
+    }
+
     fn spawn_sync(self: std::sync::Arc<Self>) {
         cove_tokio::task::spawn_blocking(move || self.handle_sync());
     }
@@ -125,62 +134,62 @@ impl RustCloudBackupManager {
     }
 
     fn handle_start_verification(&self, force_discoverable: bool) {
-        self.update_snapshot(|snapshot| {
-            snapshot.verification = VerificationState::Verifying;
+        self.update_state(|state| {
+            state.verification = VerificationState::Verifying;
         });
 
         let result = self.deep_verify_cloud_backup(force_discoverable);
 
         match result {
             DeepVerificationResult::Verified(report) => {
-                self.update_snapshot(|snapshot| {
+                self.update_state(|state| {
                     if let Some(detail) = &report.detail {
-                        snapshot.detail = Some(detail.clone());
+                        state.detail = Some(detail.clone());
                     }
-                    snapshot.verification = VerificationState::Verified(report);
-                    snapshot.recovery = RecoveryState::Idle;
+                    state.verification = VerificationState::Verified(report);
+                    state.recovery = RecoveryState::Idle;
                 });
             }
             DeepVerificationResult::PasskeyConfirmed(detail) => {
-                self.update_snapshot(|snapshot| {
+                self.update_state(|state| {
                     if let Some(detail) = detail {
-                        snapshot.detail = Some(detail);
+                        state.detail = Some(detail);
                     }
-                    snapshot.verification = VerificationState::PasskeyConfirmed;
+                    state.verification = VerificationState::PasskeyConfirmed;
                 });
             }
             DeepVerificationResult::PasskeyMissing(detail) => {
-                self.update_snapshot(|snapshot| {
+                self.update_state(|state| {
                     if let Some(detail) = detail {
-                        snapshot.detail = Some(detail);
+                        state.detail = Some(detail);
                     }
-                    snapshot.verification = VerificationState::Idle;
-                    snapshot.recovery = RecoveryState::Idle;
+                    state.verification = VerificationState::Idle;
+                    state.recovery = RecoveryState::Idle;
                 });
             }
             DeepVerificationResult::UserCancelled(detail) => {
-                self.update_snapshot(|snapshot| {
+                self.update_state(|state| {
                     if let Some(detail) = detail {
-                        snapshot.detail = Some(detail);
+                        state.detail = Some(detail);
                     }
-                    snapshot.verification = VerificationState::Cancelled;
+                    state.verification = VerificationState::Cancelled;
                 });
             }
             DeepVerificationResult::NotEnabled => {}
             DeepVerificationResult::Failed(failure) => {
-                self.update_snapshot(|snapshot| {
+                self.update_state(|state| {
                     if let Some(detail) = failure.detail.clone() {
-                        snapshot.detail = Some(detail);
+                        state.detail = Some(detail);
                     }
-                    snapshot.verification = VerificationState::Failed(failure);
+                    state.verification = VerificationState::Failed(failure);
                 });
             }
         }
     }
 
     fn handle_recovery(&self, action: RecoveryAction) {
-        self.update_snapshot(|snapshot| {
-            snapshot.recovery = RecoveryState::Recovering(action.clone());
+        self.update_state(|state| {
+            state.recovery = RecoveryState::Recovering(action.clone());
         });
 
         let result = match &action {
@@ -191,79 +200,124 @@ impl RustCloudBackupManager {
 
         match result {
             Ok(()) => {
-                self.update_snapshot(|snapshot| {
-                    snapshot.recovery = RecoveryState::Idle;
+                self.update_state(|state| {
+                    state.recovery = RecoveryState::Idle;
                 });
                 self.handle_start_verification(false);
             }
             Err(error) => {
-                self.update_snapshot(|snapshot| {
-                    snapshot.recovery = RecoveryState::Failed { action, error: error.to_string() };
+                self.update_state(|state| {
+                    state.recovery = RecoveryState::Failed { action, error: error.to_string() };
+                });
+            }
+        }
+    }
+
+    fn handle_repair_passkey(&self, no_discovery: bool) {
+        self.update_state(|state| {
+            state.recovery = RecoveryState::Recovering(RecoveryAction::RepairPasskey);
+        });
+
+        let result = if no_discovery {
+            self.do_repair_passkey_wrapper_no_discovery()
+        } else {
+            self.do_repair_passkey_wrapper()
+        };
+
+        match result {
+            Ok(()) => {
+                if let Err(error) = self.finalize_passkey_repair() {
+                    self.update_state(|state| {
+                        state.recovery = RecoveryState::Failed {
+                            action: RecoveryAction::RepairPasskey,
+                            error: error.to_string(),
+                        };
+                    });
+                    return;
+                }
+
+                self.update_state(|state| {
+                    state.recovery = RecoveryState::Idle;
+                    state.verification = VerificationState::Idle;
+                });
+            }
+            Err(CloudBackupError::PasskeyDiscoveryCancelled) => {
+                self.update_state(|state| {
+                    state.recovery = RecoveryState::Idle;
+                });
+                self.send(CloudBackupReconcileMessage::PasskeyDiscoveryCancelled);
+            }
+            Err(error) => {
+                self.update_state(|state| {
+                    state.recovery = RecoveryState::Failed {
+                        action: RecoveryAction::RepairPasskey,
+                        error: error.to_string(),
+                    };
                 });
             }
         }
     }
 
     fn handle_sync(&self) {
-        self.update_snapshot(|snapshot| {
-            snapshot.sync = SyncState::Syncing;
+        self.update_state(|state| {
+            state.sync = SyncState::Syncing;
         });
 
         match self.do_sync_unsynced_wallets() {
             Ok(()) => {
                 self.handle_refresh_detail();
-                self.update_snapshot(|snapshot| {
-                    snapshot.sync = SyncState::Idle;
+                self.update_state(|state| {
+                    state.sync = SyncState::Idle;
                 });
             }
             Err(error) => {
-                self.update_snapshot(|snapshot| {
-                    snapshot.sync = SyncState::Failed(error.to_string());
+                self.update_state(|state| {
+                    state.sync = SyncState::Failed(error.to_string());
                 });
             }
         }
     }
 
     fn handle_fetch_cloud_only(&self) {
-        self.update_snapshot(|snapshot| {
-            snapshot.cloud_only = CloudOnlyState::Loading;
+        self.update_state(|state| {
+            state.cloud_only = CloudOnlyState::Loading;
         });
 
         match self.do_fetch_cloud_only_wallets() {
             Ok(items) => {
-                self.update_snapshot(|snapshot| {
-                    snapshot.cloud_only = CloudOnlyState::Loaded { wallets: items };
+                self.update_state(|state| {
+                    state.cloud_only = CloudOnlyState::Loaded { wallets: items };
                 });
             }
             Err(error) => {
                 error!("Failed to fetch cloud-only wallets: {error}");
-                self.update_snapshot(|snapshot| {
-                    snapshot.cloud_only = CloudOnlyState::Loaded { wallets: Vec::new() };
+                self.update_state(|state| {
+                    state.cloud_only = CloudOnlyState::Loaded { wallets: Vec::new() };
                 });
             }
         }
     }
 
     fn handle_restore_cloud_wallet(&self, record_id: &str) {
-        self.update_snapshot(|snapshot| {
-            snapshot.cloud_only_operation =
+        self.update_state(|state| {
+            state.cloud_only_operation =
                 CloudOnlyOperation::Operating { record_id: record_id.to_string() };
         });
 
         match self.do_restore_cloud_wallet(record_id) {
             Ok(()) => {
-                self.update_snapshot(|snapshot| {
-                    snapshot.cloud_only_operation = CloudOnlyOperation::Idle;
+                self.update_state(|state| {
+                    state.cloud_only_operation = CloudOnlyOperation::Idle;
 
-                    if let CloudOnlyState::Loaded { wallets } = &mut snapshot.cloud_only {
+                    if let CloudOnlyState::Loaded { wallets } = &mut state.cloud_only {
                         wallets.retain(|wallet| wallet.record_id != record_id);
                     }
                 });
                 self.handle_refresh_detail();
             }
             Err(error) => {
-                self.update_snapshot(|snapshot| {
-                    snapshot.cloud_only_operation =
+                self.update_state(|state| {
+                    state.cloud_only_operation =
                         CloudOnlyOperation::Failed { error: error.to_string() };
                 });
             }
@@ -271,25 +325,25 @@ impl RustCloudBackupManager {
     }
 
     fn handle_delete_cloud_wallet(&self, record_id: &str) {
-        self.update_snapshot(|snapshot| {
-            snapshot.cloud_only_operation =
+        self.update_state(|state| {
+            state.cloud_only_operation =
                 CloudOnlyOperation::Operating { record_id: record_id.to_string() };
         });
 
         match self.do_delete_cloud_wallet(record_id) {
             Ok(()) => {
-                self.update_snapshot(|snapshot| {
-                    snapshot.cloud_only_operation = CloudOnlyOperation::Idle;
+                self.update_state(|state| {
+                    state.cloud_only_operation = CloudOnlyOperation::Idle;
 
-                    if let CloudOnlyState::Loaded { wallets } = &mut snapshot.cloud_only {
+                    if let CloudOnlyState::Loaded { wallets } = &mut state.cloud_only {
                         wallets.retain(|wallet| wallet.record_id != record_id);
                     }
                 });
                 self.handle_refresh_detail();
             }
             Err(error) => {
-                self.update_snapshot(|snapshot| {
-                    snapshot.cloud_only_operation =
+                self.update_state(|state| {
+                    state.cloud_only_operation =
                         CloudOnlyOperation::Failed { error: error.to_string() };
                 });
             }
@@ -300,8 +354,8 @@ impl RustCloudBackupManager {
         if let Some(result) = self.refresh_cloud_backup_detail() {
             match result {
                 super::cloud_backup_manager::CloudBackupDetailResult::Success(detail) => {
-                    self.update_snapshot(|snapshot| {
-                        snapshot.detail = Some(detail);
+                    self.update_state(|state| {
+                        state.detail = Some(detail);
                     });
                 }
                 super::cloud_backup_manager::CloudBackupDetailResult::AccessError(error) => {
