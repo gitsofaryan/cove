@@ -37,6 +37,29 @@ pub enum CloudBackup {
     },
 }
 
+impl CloudBackup {
+    pub(crate) fn wallet_count(&self) -> Option<u32> {
+        match self {
+            Self::Enabled { wallet_count, .. } | Self::Unverified { wallet_count, .. } => {
+                *wallet_count
+            }
+            Self::Disabled => None,
+        }
+    }
+
+    pub(crate) fn with_wallet_count(&self, wallet_count: Option<u32>) -> Self {
+        match self {
+            Self::Disabled => Self::Disabled,
+            Self::Enabled { last_sync, .. } => {
+                Self::Enabled { last_sync: *last_sync, wallet_count }
+            }
+            Self::Unverified { last_sync, .. } => {
+                Self::Unverified { last_sync: *last_sync, wallet_count }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum GlobalConfigKey {
     SelectedWalletId,
@@ -450,6 +473,28 @@ mod tests {
         assert_eq!(
             parsed,
             CloudBackup::Enabled { last_sync: Some(1700000000), wallet_count: None }
+        );
+    }
+
+    #[test]
+    fn test_cloud_backup_with_wallet_count_preserves_enabled() {
+        use super::CloudBackup;
+
+        let state = CloudBackup::Enabled { last_sync: Some(1700000000), wallet_count: None };
+        assert_eq!(
+            state.with_wallet_count(Some(5)),
+            CloudBackup::Enabled { last_sync: Some(1700000000), wallet_count: Some(5) }
+        );
+    }
+
+    #[test]
+    fn test_cloud_backup_with_wallet_count_preserves_unverified() {
+        use super::CloudBackup;
+
+        let state = CloudBackup::Unverified { last_sync: Some(1700000000), wallet_count: None };
+        assert_eq!(
+            state.with_wallet_count(Some(5)),
+            CloudBackup::Unverified { last_sync: Some(1700000000), wallet_count: Some(5) }
         );
     }
 }

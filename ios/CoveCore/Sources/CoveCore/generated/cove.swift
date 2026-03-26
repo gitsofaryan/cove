@@ -13074,16 +13074,16 @@ public struct CloudBackupWalletItem: Equatable, Hashable {
     public var fingerprint: String?
     public var status: CloudBackupWalletStatus
     /**
-     * Cloud record ID, only set for cloud-only wallets
+     * Deterministic cloud record ID for the wallet backup represented by this item
      */
-    public var recordId: String?
+    public var recordId: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(name: String, network: Network, walletMode: WalletMode, walletType: WalletType, fingerprint: String?, status: CloudBackupWalletStatus, 
         /**
-         * Cloud record ID, only set for cloud-only wallets
-         */recordId: String?) {
+         * Deterministic cloud record ID for the wallet backup represented by this item
+         */recordId: String) {
         self.name = name
         self.network = network
         self.walletMode = walletMode
@@ -13115,7 +13115,7 @@ public struct FfiConverterTypeCloudBackupWalletItem: FfiConverterRustBuffer {
                 walletType: FfiConverterTypeWalletType.read(from: &buf), 
                 fingerprint: FfiConverterOptionString.read(from: &buf), 
                 status: FfiConverterTypeCloudBackupWalletStatus.read(from: &buf), 
-                recordId: FfiConverterOptionString.read(from: &buf)
+                recordId: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -13126,7 +13126,7 @@ public struct FfiConverterTypeCloudBackupWalletItem: FfiConverterRustBuffer {
         FfiConverterTypeWalletType.write(value.walletType, into: &buf)
         FfiConverterOptionString.write(value.fingerprint, into: &buf)
         FfiConverterTypeCloudBackupWalletStatus.write(value.status, into: &buf)
-        FfiConverterOptionString.write(value.recordId, into: &buf)
+        FfiConverterString.write(value.recordId, into: &buf)
     }
 }
 

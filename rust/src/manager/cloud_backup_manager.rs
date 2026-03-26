@@ -1,3 +1,4 @@
+mod cloud_inventory;
 mod ops;
 mod pending;
 mod verify;
@@ -76,8 +77,8 @@ pub struct CloudBackupWalletItem {
     pub wallet_type: WalletType,
     pub fingerprint: Option<String>,
     pub status: CloudBackupWalletStatus,
-    /// Cloud record ID, only set for cloud-only wallets
-    pub record_id: Option<String>,
+    /// Deterministic cloud record ID for the wallet backup represented by this item
+    pub record_id: String,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -260,19 +261,16 @@ impl RustCloudBackupManager {
     /// Number of wallets in the cloud backup
     pub fn backup_wallet_count(&self) -> Option<u32> {
         let db = Database::global();
-        match db.global_config.cloud_backup() {
-            CloudBackup::Enabled { wallet_count: Some(count), .. }
-            | CloudBackup::Unverified { wallet_count: Some(count), .. } => Some(count),
-            CloudBackup::Enabled { wallet_count: None, last_sync }
-            | CloudBackup::Unverified { wallet_count: None, last_sync } => {
+        let current = db.global_config.cloud_backup();
+
+        match current.wallet_count() {
+            Some(count) => Some(count),
+            None if !matches!(&current, CloudBackup::Disabled) => {
                 let count = count_all_wallets(&db);
-                let _ = db.global_config.set_cloud_backup(&CloudBackup::Enabled {
-                    last_sync,
-                    wallet_count: Some(count),
-                });
+                let _ = db.global_config.set_cloud_backup(&current.with_wallet_count(Some(count)));
                 Some(count)
             }
-            CloudBackup::Disabled => None,
+            None => None,
         }
     }
 

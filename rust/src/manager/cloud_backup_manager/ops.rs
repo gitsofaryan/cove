@@ -7,6 +7,7 @@ use cove_util::ResultExt as _;
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
+use super::cloud_inventory::CloudWalletInventory;
 use super::wallets::{
     NamespaceMatchOutcome, all_local_wallets, discover_or_create_prf_key, obtain_prf_key,
     persist_enabled_cloud_backup_state, restore_single_wallet, try_match_namespace_with_passkey,
@@ -27,31 +28,15 @@ impl RustCloudBackupManager {
         let namespace = self.current_namespace_id()?;
         info!("Sync: listing cloud wallet backups for namespace {namespace}");
         let cloud = CloudStorage::global();
-        let cloud_record_ids: std::collections::HashSet<_> = cloud
-            .list_wallet_backups(namespace)
-            .map_err_str(CloudBackupError::Cloud)?
-            .into_iter()
-            .collect();
+        let wallet_record_ids =
+            cloud.list_wallet_backups(namespace).map_err_str(CloudBackupError::Cloud)?;
+        let inventory = CloudWalletInventory::load(&wallet_record_ids);
 
-        let db = Database::global();
-        let mut cloud_record_ids = cloud_record_ids;
-        if let Ok(Some(pending)) = db.cloud_backup_upload_verification.get() {
-            let master_key_id = super::cspp_master_key_record_id();
-            for blob in &pending.blobs {
-                if blob.record_id != master_key_id {
-                    cloud_record_ids.insert(blob.record_id.clone());
-                }
-            }
-        }
-
-        info!("Sync: found {} wallet(s) in cloud (including pending)", cloud_record_ids.len());
-        let unsynced: Vec<_> = all_local_wallets(&db)
-            .into_iter()
-            .filter(|wallet| {
-                !cloud_record_ids
-                    .contains(&cove_cspp::backup_data::wallet_record_id(wallet.id.as_ref()))
-            })
-            .collect();
+        info!(
+            "Sync: found {} wallet(s) in cloud (including pending)",
+            inventory.cloud_wallet_count()
+        );
+        let unsynced = inventory.unsynced_local_wallets();
 
         if unsynced.is_empty() {
             info!("Sync: all wallets already synced");
@@ -136,7 +121,7 @@ impl RustCloudBackupManager {
                 wallet_type: metadata.wallet_type,
                 fingerprint: metadata.master_fingerprint.as_ref().map(|fp| fp.as_uppercase()),
                 status: CloudBackupWalletStatus::DeletedFromDevice,
-                record_id: Some(record_id.clone()),
+                record_id: record_id.clone(),
             });
         }
 
