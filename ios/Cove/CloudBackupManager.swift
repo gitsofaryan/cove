@@ -59,15 +59,25 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
     }
 
     var isUnverified: Bool {
-        state.isUnverified
+        if case .needsVerification = state.verificationMetadata {
+            return true
+        }
+
+        return false
     }
 
     var isConfigured: Bool {
-        state.isConfigured
+        switch state.verificationMetadata {
+        case .notConfigured:
+            false
+        case .configuredNeverVerified, .verified, .needsVerification:
+            true
+        }
     }
 
     var lastVerifiedAt: Date? {
-        state.lastVerifiedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        guard case let .verified(lastVerifiedAt) = state.verificationMetadata else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(lastVerifiedAt))
     }
 
     var isVerificationStale: Bool {
@@ -122,10 +132,8 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
             state.syncError = syncError
         case let .verificationPromptChanged(pending):
             state.shouldPromptVerification = pending
-        case let .verificationMetadataChanged(isUnverified, isConfigured, lastVerifiedAt):
-            state.isUnverified = isUnverified
-            state.isConfigured = isConfigured
-            state.lastVerifiedAt = lastVerifiedAt
+        case let .verificationMetadataChanged(verificationMetadata):
+            state.verificationMetadata = verificationMetadata
         case let .pendingUploadVerificationChanged(pending):
             state.hasPendingUploadVerification = pending
         case let .detailChanged(detail):

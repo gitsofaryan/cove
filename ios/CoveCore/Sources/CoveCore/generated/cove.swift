@@ -12978,9 +12978,7 @@ public struct CloudBackupState: Equatable, Hashable {
     public var syncError: String?
     public var hasPendingUploadVerification: Bool
     public var shouldPromptVerification: Bool
-    public var isUnverified: Bool
-    public var isConfigured: Bool
-    public var lastVerifiedAt: UInt64?
+    public var verificationMetadata: CloudBackupVerificationMetadata
     public var detail: CloudBackupDetail?
     public var verification: VerificationState
     public var sync: SyncState
@@ -12990,7 +12988,7 @@ public struct CloudBackupState: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(status: CloudBackupStatus, progress: CloudBackupProgress?, restoreProgress: CloudBackupRestoreProgress?, restoreReport: CloudBackupRestoreReport?, syncError: String?, hasPendingUploadVerification: Bool, shouldPromptVerification: Bool, isUnverified: Bool, isConfigured: Bool, lastVerifiedAt: UInt64?, detail: CloudBackupDetail?, verification: VerificationState, sync: SyncState, recovery: RecoveryState, cloudOnly: CloudOnlyState, cloudOnlyOperation: CloudOnlyOperation) {
+    public init(status: CloudBackupStatus, progress: CloudBackupProgress?, restoreProgress: CloudBackupRestoreProgress?, restoreReport: CloudBackupRestoreReport?, syncError: String?, hasPendingUploadVerification: Bool, shouldPromptVerification: Bool, verificationMetadata: CloudBackupVerificationMetadata, detail: CloudBackupDetail?, verification: VerificationState, sync: SyncState, recovery: RecoveryState, cloudOnly: CloudOnlyState, cloudOnlyOperation: CloudOnlyOperation) {
         self.status = status
         self.progress = progress
         self.restoreProgress = restoreProgress
@@ -12998,9 +12996,7 @@ public struct CloudBackupState: Equatable, Hashable {
         self.syncError = syncError
         self.hasPendingUploadVerification = hasPendingUploadVerification
         self.shouldPromptVerification = shouldPromptVerification
-        self.isUnverified = isUnverified
-        self.isConfigured = isConfigured
-        self.lastVerifiedAt = lastVerifiedAt
+        self.verificationMetadata = verificationMetadata
         self.detail = detail
         self.verification = verification
         self.sync = sync
@@ -13032,9 +13028,7 @@ public struct FfiConverterTypeCloudBackupState: FfiConverterRustBuffer {
                 syncError: FfiConverterOptionString.read(from: &buf), 
                 hasPendingUploadVerification: FfiConverterBool.read(from: &buf), 
                 shouldPromptVerification: FfiConverterBool.read(from: &buf), 
-                isUnverified: FfiConverterBool.read(from: &buf), 
-                isConfigured: FfiConverterBool.read(from: &buf), 
-                lastVerifiedAt: FfiConverterOptionUInt64.read(from: &buf), 
+                verificationMetadata: FfiConverterTypeCloudBackupVerificationMetadata.read(from: &buf), 
                 detail: FfiConverterOptionTypeCloudBackupDetail.read(from: &buf), 
                 verification: FfiConverterTypeVerificationState.read(from: &buf), 
                 sync: FfiConverterTypeSyncState.read(from: &buf), 
@@ -13052,9 +13046,7 @@ public struct FfiConverterTypeCloudBackupState: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.syncError, into: &buf)
         FfiConverterBool.write(value.hasPendingUploadVerification, into: &buf)
         FfiConverterBool.write(value.shouldPromptVerification, into: &buf)
-        FfiConverterBool.write(value.isUnverified, into: &buf)
-        FfiConverterBool.write(value.isConfigured, into: &buf)
-        FfiConverterOptionUInt64.write(value.lastVerifiedAt, into: &buf)
+        FfiConverterTypeCloudBackupVerificationMetadata.write(value.verificationMetadata, into: &buf)
         FfiConverterOptionTypeCloudBackupDetail.write(value.detail, into: &buf)
         FfiConverterTypeVerificationState.write(value.verification, into: &buf)
         FfiConverterTypeSyncState.write(value.sync, into: &buf)
@@ -18067,11 +18059,11 @@ public enum CloudBackupReconcileMessage: Equatable, Hashable {
     )
     case syncErrorChanged(String?
     )
-    case verificationPromptChanged(pending: Bool
+    case verificationPromptChanged(Bool
     )
-    case verificationMetadataChanged(isUnverified: Bool, isConfigured: Bool, lastVerifiedAt: UInt64?
+    case verificationMetadataChanged(CloudBackupVerificationMetadata
     )
-    case pendingUploadVerificationChanged(pending: Bool
+    case pendingUploadVerificationChanged(Bool
     )
     case detailChanged(CloudBackupDetail?
     )
@@ -18123,13 +18115,13 @@ public struct FfiConverterTypeCloudBackupReconcileMessage: FfiConverterRustBuffe
         case 5: return .syncErrorChanged(try FfiConverterOptionString.read(from: &buf)
         )
         
-        case 6: return .verificationPromptChanged(pending: try FfiConverterBool.read(from: &buf)
+        case 6: return .verificationPromptChanged(try FfiConverterBool.read(from: &buf)
         )
         
-        case 7: return .verificationMetadataChanged(isUnverified: try FfiConverterBool.read(from: &buf), isConfigured: try FfiConverterBool.read(from: &buf), lastVerifiedAt: try FfiConverterOptionUInt64.read(from: &buf)
+        case 7: return .verificationMetadataChanged(try FfiConverterTypeCloudBackupVerificationMetadata.read(from: &buf)
         )
         
-        case 8: return .pendingUploadVerificationChanged(pending: try FfiConverterBool.read(from: &buf)
+        case 8: return .pendingUploadVerificationChanged(try FfiConverterBool.read(from: &buf)
         )
         
         case 9: return .detailChanged(try FfiConverterOptionTypeCloudBackupDetail.read(from: &buf)
@@ -18187,21 +18179,19 @@ public struct FfiConverterTypeCloudBackupReconcileMessage: FfiConverterRustBuffe
             FfiConverterOptionString.write(v1, into: &buf)
             
         
-        case let .verificationPromptChanged(pending):
+        case let .verificationPromptChanged(v1):
             writeInt(&buf, Int32(6))
-            FfiConverterBool.write(pending, into: &buf)
+            FfiConverterBool.write(v1, into: &buf)
             
         
-        case let .verificationMetadataChanged(isUnverified,isConfigured,lastVerifiedAt):
+        case let .verificationMetadataChanged(v1):
             writeInt(&buf, Int32(7))
-            FfiConverterBool.write(isUnverified, into: &buf)
-            FfiConverterBool.write(isConfigured, into: &buf)
-            FfiConverterOptionUInt64.write(lastVerifiedAt, into: &buf)
+            FfiConverterTypeCloudBackupVerificationMetadata.write(v1, into: &buf)
             
         
-        case let .pendingUploadVerificationChanged(pending):
+        case let .pendingUploadVerificationChanged(v1):
             writeInt(&buf, Int32(8))
-            FfiConverterBool.write(pending, into: &buf)
+            FfiConverterBool.write(v1, into: &buf)
             
         
         case let .detailChanged(v1):
@@ -18428,6 +18418,89 @@ public func FfiConverterTypeCloudBackupStatus_lift(_ buf: RustBuffer) throws -> 
 #endif
 public func FfiConverterTypeCloudBackupStatus_lower(_ value: CloudBackupStatus) -> RustBuffer {
     return FfiConverterTypeCloudBackupStatus.lower(value)
+}
+
+
+
+
+public enum CloudBackupVerificationMetadata: Equatable, Hashable {
+    
+    case notConfigured
+    case configuredNeverVerified
+    case verified(UInt64
+    )
+    case needsVerification
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CloudBackupVerificationMetadata: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCloudBackupVerificationMetadata: FfiConverterRustBuffer {
+    typealias SwiftType = CloudBackupVerificationMetadata
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CloudBackupVerificationMetadata {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .notConfigured
+        
+        case 2: return .configuredNeverVerified
+        
+        case 3: return .verified(try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        case 4: return .needsVerification
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CloudBackupVerificationMetadata, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .notConfigured:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .configuredNeverVerified:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .verified(v1):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt64.write(v1, into: &buf)
+            
+        
+        case .needsVerification:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupVerificationMetadata_lift(_ buf: RustBuffer) throws -> CloudBackupVerificationMetadata {
+    return try FfiConverterTypeCloudBackupVerificationMetadata.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCloudBackupVerificationMetadata_lower(_ value: CloudBackupVerificationMetadata) -> RustBuffer {
+    return FfiConverterTypeCloudBackupVerificationMetadata.lower(value)
 }
 
 

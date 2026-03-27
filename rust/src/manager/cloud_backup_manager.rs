@@ -75,17 +75,9 @@ pub enum CloudBackupReconcileMessage {
     RestoreProgressChanged(Option<CloudBackupRestoreProgress>),
     RestoreReportChanged(Option<CloudBackupRestoreReport>),
     SyncErrorChanged(Option<String>),
-    VerificationPromptChanged {
-        pending: bool,
-    },
-    VerificationMetadataChanged {
-        is_unverified: bool,
-        is_configured: bool,
-        last_verified_at: Option<u64>,
-    },
-    PendingUploadVerificationChanged {
-        pending: bool,
-    },
+    VerificationPromptChanged(bool),
+    VerificationMetadataChanged(CloudBackupVerificationMetadata),
+    PendingUploadVerificationChanged(bool),
     DetailChanged(Option<CloudBackupDetail>),
     VerificationChanged(VerificationState),
     SyncChanged(SyncState),
@@ -183,6 +175,14 @@ pub struct DeepVerificationReport {
     pub detail: Option<CloudBackupDetail>,
 }
 
+#[derive(Debug, Clone, Hash, Eq, PartialEq, uniffi::Enum)]
+pub enum CloudBackupVerificationMetadata {
+    NotConfigured,
+    ConfiguredNeverVerified,
+    Verified(u64),
+    NeedsVerification,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct DeepVerificationFailure {
     pub kind: VerificationFailureKind,
@@ -211,9 +211,7 @@ pub struct CloudBackupState {
     pub sync_error: Option<String>,
     pub has_pending_upload_verification: bool,
     pub should_prompt_verification: bool,
-    pub is_unverified: bool,
-    pub is_configured: bool,
-    pub last_verified_at: Option<u64>,
+    pub verification_metadata: CloudBackupVerificationMetadata,
     pub detail: Option<CloudBackupDetail>,
     pub verification: VerificationState,
     pub sync: SyncState,
@@ -232,9 +230,7 @@ impl Default for CloudBackupState {
             sync_error: None,
             has_pending_upload_verification: false,
             should_prompt_verification: false,
-            is_unverified: false,
-            is_configured: false,
-            last_verified_at: None,
+            verification_metadata: CloudBackupVerificationMetadata::NotConfigured,
             detail: None,
             verification: VerificationState::Idle,
             sync: SyncState::Idle,
@@ -339,14 +335,26 @@ impl RustCloudBackupManager {
         .into()
     }
 
-    fn load_persisted_flags() -> (bool, bool, Option<u64>, bool) {
+    fn verification_metadata_for(
+        db_state: &PersistedCloudBackupState,
+    ) -> CloudBackupVerificationMetadata {
+        if db_state.is_unverified() {
+            return CloudBackupVerificationMetadata::NeedsVerification;
+        }
+
+        if !db_state.is_configured() {
+            return CloudBackupVerificationMetadata::NotConfigured;
+        }
+
+        match db_state.last_verified_at {
+            Some(last_verified_at) => CloudBackupVerificationMetadata::Verified(last_verified_at),
+            None => CloudBackupVerificationMetadata::ConfiguredNeverVerified,
+        }
+    }
+
+    fn load_persisted_flags() -> (CloudBackupVerificationMetadata, bool) {
         let db_state = Self::load_persisted_state();
-        (
-            db_state.is_unverified(),
-            db_state.is_configured(),
-            db_state.last_verified_at,
-            db_state.should_prompt_verification(),
-        )
+        (Self::verification_metadata_for(&db_state), db_state.should_prompt_verification())
     }
 
     pub(super) fn send(&self, message: Message) {
@@ -355,100 +363,68 @@ impl RustCloudBackupManager {
         }
     }
 
-    pub(super) fn set_status(&self, status: CloudBackupStatus) {
-        let changed = {
+    fn set_and_notify_field<T>(
+        &self,
+        value: T,
+        field: impl FnOnce(&mut CloudBackupState) -> &mut T,
+        notify: fn(T) -> Message,
+    ) where
+        T: PartialEq + Clone,
+    {
+        {
             let mut state = self.state.write();
-            if state.status == status {
-                false
-            } else {
-                state.status = status.clone();
-                true
+            let slot = field(&mut state);
+            if *slot == value {
+                return;
             }
-        };
 
-        if changed {
-            self.send(Message::StatusChanged(status));
+            *slot = value.clone();
         }
+
+        self.send(notify(value));
+    }
+
+    pub(super) fn set_status(&self, status: CloudBackupStatus) {
+        self.set_and_notify_field(status, |state| &mut state.status, Message::StatusChanged);
     }
 
     pub(super) fn set_progress(&self, progress: Option<CloudBackupProgress>) {
-        let changed = {
-            let mut state = self.state.write();
-            if state.progress == progress {
-                false
-            } else {
-                state.progress = progress;
-                true
-            }
-        };
-
-        if changed {
-            self.send(Message::ProgressChanged(progress));
-        }
+        self.set_and_notify_field(progress, |state| &mut state.progress, Message::ProgressChanged);
     }
 
     pub(super) fn set_restore_progress(&self, progress: Option<CloudBackupRestoreProgress>) {
-        let changed = {
-            let mut state = self.state.write();
-            if state.restore_progress == progress {
-                false
-            } else {
-                state.restore_progress = progress.clone();
-                true
-            }
-        };
-
-        if changed {
-            self.send(Message::RestoreProgressChanged(progress));
-        }
+        self.set_and_notify_field(
+            progress,
+            |state| &mut state.restore_progress,
+            Message::RestoreProgressChanged,
+        );
     }
 
     pub(super) fn set_restore_report(&self, report: Option<CloudBackupRestoreReport>) {
-        let changed = {
-            let mut state = self.state.write();
-            if state.restore_report == report {
-                false
-            } else {
-                state.restore_report = report.clone();
-                true
-            }
-        };
-
-        if changed {
-            self.send(Message::RestoreReportChanged(report));
-        }
+        self.set_and_notify_field(
+            report,
+            |state| &mut state.restore_report,
+            Message::RestoreReportChanged,
+        );
     }
 
     pub(super) fn set_sync_error(&self, sync_error: Option<String>) {
-        let changed = {
-            let mut state = self.state.write();
-            if state.sync_error == sync_error {
-                false
-            } else {
-                state.sync_error = sync_error.clone();
-                true
-            }
-        };
-
-        if changed {
-            self.send(Message::SyncErrorChanged(sync_error));
-        }
+        self.set_and_notify_field(
+            sync_error,
+            |state| &mut state.sync_error,
+            Message::SyncErrorChanged,
+        );
     }
 
     pub(super) fn refresh_persisted_flags(&self) {
-        let (is_unverified, is_configured, last_verified_at, should_prompt_verification) =
-            Self::load_persisted_flags();
+        let (verification_metadata, should_prompt_verification) = Self::load_persisted_flags();
 
         let (metadata_changed, prompt_changed) = {
             let mut state = self.state.write();
 
-            let metadata_changed = state.is_unverified != is_unverified
-                || state.is_configured != is_configured
-                || state.last_verified_at != last_verified_at;
+            let metadata_changed = state.verification_metadata != verification_metadata;
             if metadata_changed {
-                state.is_unverified = is_unverified;
-                state.is_configured = is_configured;
-                state.last_verified_at = last_verified_at;
+                state.verification_metadata = verification_metadata.clone();
             }
 
             let prompt_changed = state.should_prompt_verification != should_prompt_verification;
@@ -460,128 +436,56 @@ impl RustCloudBackupManager {
         };
 
         if metadata_changed {
-            self.send(Message::VerificationMetadataChanged {
-                is_unverified,
-                is_configured,
-                last_verified_at,
-            });
+            self.send(Message::VerificationMetadataChanged(verification_metadata));
         }
 
         if prompt_changed {
-            self.send(Message::VerificationPromptChanged { pending: should_prompt_verification });
+            self.send(Message::VerificationPromptChanged(should_prompt_verification));
         }
     }
 
     pub(super) fn set_pending_upload_verification(&self, pending: bool) {
-        let changed = {
-            let mut state = self.state.write();
-            if state.has_pending_upload_verification == pending {
-                false
-            } else {
-                state.has_pending_upload_verification = pending;
-                true
-            }
-        };
-
-        if changed {
-            self.send(Message::PendingUploadVerificationChanged { pending });
-        }
+        self.set_and_notify_field(
+            pending,
+            |state| &mut state.has_pending_upload_verification,
+            Message::PendingUploadVerificationChanged,
+        );
     }
 
     pub(super) fn set_detail(&self, detail: Option<CloudBackupDetail>) {
-        let changed = {
-            let mut state = self.state.write();
-            if state.detail == detail {
-                false
-            } else {
-                state.detail = detail.clone();
-                true
-            }
-        };
-
-        if changed {
-            self.send(Message::DetailChanged(detail));
-        }
+        self.set_and_notify_field(detail, |state| &mut state.detail, Message::DetailChanged);
     }
 
     pub(super) fn set_verification(&self, verification: VerificationState) {
-        let changed = {
-            let mut state = self.state.write();
-            if state.verification == verification {
-                false
-            } else {
-                state.verification = verification.clone();
-                true
-            }
-        };
-
-        if changed {
-            self.send(Message::VerificationChanged(verification));
-        }
+        self.set_and_notify_field(
+            verification,
+            |state| &mut state.verification,
+            Message::VerificationChanged,
+        );
     }
 
     pub(super) fn set_sync(&self, sync: SyncState) {
-        let changed = {
-            let mut state = self.state.write();
-            if state.sync == sync {
-                false
-            } else {
-                state.sync = sync.clone();
-                true
-            }
-        };
-
-        if changed {
-            self.send(Message::SyncChanged(sync));
-        }
+        self.set_and_notify_field(sync, |state| &mut state.sync, Message::SyncChanged);
     }
 
     pub(super) fn set_recovery(&self, recovery: RecoveryState) {
-        let changed = {
-            let mut state = self.state.write();
-            if state.recovery == recovery {
-                false
-            } else {
-                state.recovery = recovery.clone();
-                true
-            }
-        };
-
-        if changed {
-            self.send(Message::RecoveryChanged(recovery));
-        }
+        self.set_and_notify_field(recovery, |state| &mut state.recovery, Message::RecoveryChanged);
     }
 
     pub(super) fn set_cloud_only(&self, cloud_only: CloudOnlyState) {
-        let changed = {
-            let mut state = self.state.write();
-            if state.cloud_only == cloud_only {
-                false
-            } else {
-                state.cloud_only = cloud_only.clone();
-                true
-            }
-        };
-
-        if changed {
-            self.send(Message::CloudOnlyChanged(cloud_only));
-        }
+        self.set_and_notify_field(
+            cloud_only,
+            |state| &mut state.cloud_only,
+            Message::CloudOnlyChanged,
+        );
     }
 
     pub(super) fn set_cloud_only_operation(&self, cloud_only_operation: CloudOnlyOperation) {
-        let changed = {
-            let mut state = self.state.write();
-            if state.cloud_only_operation == cloud_only_operation {
-                false
-            } else {
-                state.cloud_only_operation = cloud_only_operation.clone();
-                true
-            }
-        };
-
-        if changed {
-            self.send(Message::CloudOnlyOperationChanged(cloud_only_operation));
-        }
+        self.set_and_notify_field(
+            cloud_only_operation,
+            |state| &mut state.cloud_only_operation,
+            Message::CloudOnlyOperationChanged,
+        );
     }
 
     pub(crate) fn persist_cloud_backup_state(
@@ -691,11 +595,8 @@ impl RustCloudBackupManager {
 
     pub fn state(&self) -> CloudBackupState {
         let mut state = self.state.read().clone();
-        let (is_unverified, is_configured, last_verified_at, should_prompt_verification) =
-            Self::load_persisted_flags();
-        state.is_unverified = is_unverified;
-        state.is_configured = is_configured;
-        state.last_verified_at = last_verified_at;
+        let (verification_metadata, should_prompt_verification) = Self::load_persisted_flags();
+        state.verification_metadata = verification_metadata;
         state.should_prompt_verification = should_prompt_verification;
         state.has_pending_upload_verification = self.has_pending_cloud_upload_verification();
         state
@@ -974,6 +875,57 @@ mod tests {
         manager.set_restore_progress(Some(progress.clone()));
 
         assert_eq!(manager.state.read().restore_progress, Some(progress));
+    }
+
+    #[test]
+    fn verification_metadata_is_not_configured_when_backup_is_disabled() {
+        let db_state = PersistedCloudBackupState::default();
+
+        assert_eq!(
+            RustCloudBackupManager::verification_metadata_for(&db_state),
+            CloudBackupVerificationMetadata::NotConfigured,
+        );
+    }
+
+    #[test]
+    fn verification_metadata_is_configured_never_verified_without_timestamp() {
+        let db_state = PersistedCloudBackupState {
+            status: PersistedCloudBackupStatus::Enabled,
+            ..PersistedCloudBackupState::default()
+        };
+
+        assert_eq!(
+            RustCloudBackupManager::verification_metadata_for(&db_state),
+            CloudBackupVerificationMetadata::ConfiguredNeverVerified,
+        );
+    }
+
+    #[test]
+    fn verification_metadata_is_verified_with_timestamp() {
+        let db_state = PersistedCloudBackupState {
+            status: PersistedCloudBackupStatus::Enabled,
+            last_verified_at: Some(21),
+            ..PersistedCloudBackupState::default()
+        };
+
+        assert_eq!(
+            RustCloudBackupManager::verification_metadata_for(&db_state),
+            CloudBackupVerificationMetadata::Verified(21),
+        );
+    }
+
+    #[test]
+    fn verification_metadata_is_needs_verification_when_unverified() {
+        let db_state = PersistedCloudBackupState {
+            status: PersistedCloudBackupStatus::Unverified,
+            last_verified_at: Some(21),
+            ..PersistedCloudBackupState::default()
+        };
+
+        assert_eq!(
+            RustCloudBackupManager::verification_metadata_for(&db_state),
+            CloudBackupVerificationMetadata::NeedsVerification,
+        );
     }
 
     #[test]
