@@ -96,90 +96,43 @@ private struct CloudCheckView: View {
     }
 
     let manager: OnboardingManager
-    @State private var progress: Double = 0
 
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
 
-            // decorative icon
-            ZStack {
-                Circle()
-                    .fill(Color.duskBlue.opacity(0.4))
-                    .frame(width: 100, height: 100)
-                    .shadow(color: Color(red: 0.165, green: 0.353, blue: 0.545).opacity(0.5), radius: 30)
-
-                Circle()
-                    .stroke(
-                        LinearGradient(
-                            colors: [.btnGradientLight, .btnGradientDark],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 2
-                    )
-                    .frame(width: 100, height: 100)
-
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 36, weight: .medium))
-                    .foregroundStyle(.white)
-            }
-
-            VStack(spacing: 12) {
-                Text("Checking for cloud backup...")
-                    .font(.title3)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.white)
-
-                ProgressView()
-                    .controlSize(.regular)
-                    .tint(.white)
-
-                ProgressView(value: progress)
-                    .tint(.white)
-                    .frame(width: 200)
-                    .opacity(progress > 0 ? 1 : 0)
-            }
+            OnboardingStatusHero(
+                systemImage: "icloud",
+                pulse: true,
+                iconSize: 22
+            )
 
             Spacer()
+                .frame(height: 44)
+
+            VStack(spacing: 10) {
+                Text("Looking for iCloud backup...")
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+
+                Text("This only takes a moment")
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundStyle(.coveLightGray.opacity(0.7))
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 24)
+
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, 28)
+        .padding(.top, 18)
+        .padding(.bottom, 28)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background {
-            ZStack {
-                Color.midnightBlue
-
-                RadialGradient(
-                    stops: [
-                        .init(color: Color(red: 0.165, green: 0.353, blue: 0.545).opacity(0.9), location: 0),
-                        .init(color: Color(red: 0.118, green: 0.227, blue: 0.361).opacity(0.4), location: 0.45),
-                        .init(color: .clear, location: 0.85),
-                    ],
-                    center: .init(x: 0.35, y: 0.18),
-                    startRadius: 0,
-                    endRadius: 400
-                )
-
-                RadialGradient(
-                    stops: [
-                        .init(color: Color(red: 0.118, green: 0.290, blue: 0.420).opacity(0.8), location: 0),
-                        .init(color: .clear, location: 0.75),
-                    ],
-                    center: .init(x: 0.75, y: 0.12),
-                    startRadius: 0,
-                    endRadius: 300
-                )
-            }
-            .ignoresSafeArea()
-        }
+        .onboardingRecoveryBackground()
         .task {
             let hasBackup = await Task.detached(priority: .userInitiated) {
-                await Self.checkForCloudBackup { attempt in
-                    await MainActor.run {
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            progress = Double(attempt) / Double(Self.maxAttempts)
-                        }
-                    }
-                }
+                await Self.checkForCloudBackup { _ in }
             }.value
             manager.dispatch(.cloudCheckComplete(hasBackup: hasBackup))
         }

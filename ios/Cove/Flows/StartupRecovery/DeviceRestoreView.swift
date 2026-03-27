@@ -24,7 +24,7 @@ struct DeviceRestoreView: View {
     @State private var phase: RestorePhase = .restoring
     @State private var backupManager = CloudBackupManager.shared
     @State private var hasStartedRestore = false
-    @State private var hasCompletedFlow = false
+    @State private var hasDeliveredCompletion = false
     @State private var timeoutTask: Task<Void, Never>?
 
     private let restoreTimeout: Duration = .seconds(120)
@@ -33,34 +33,28 @@ struct DeviceRestoreView: View {
         backupManager.restoreProgress
     }
 
-    private var restoringSubtitle: String {
-        guard let restoreProgress else {
-            return "Preparing restore..."
-        }
+    private var combinedRestoreProgress: Double {
+        guard let restoreProgress else { return 0 }
 
         switch restoreProgress.stage {
         case .finding:
-            return "Finding wallets in your iCloud backup..."
+            return 0
+
         case .downloading:
-            guard let total = restoreProgress.total else {
-                return "Downloading wallets..."
-            }
-            return "Downloading wallets (\(restoreProgress.completed)/\(total))"
+            guard let total = restoreProgress.total, total > 0 else { return 0 }
+            let totalWork = Double(total) * 2
+            return Double(restoreProgress.completed) / totalWork
+
         case .restoring:
-            guard let total = restoreProgress.total else {
-                return "Restoring wallets..."
-            }
-            return "Restoring wallets (\(restoreProgress.completed)/\(total))"
+            guard let total = restoreProgress.total, total > 0 else { return 0 }
+            let totalWork = Double(total) * 2
+            return Double(total + restoreProgress.completed) / totalWork
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            OnboardingStepIndicator(selected: 2)
-                .padding(.top, 8)
-
-            Spacer()
-                .frame(height: 42)
+            Spacer(minLength: 0)
 
             heroIcon
 
@@ -69,13 +63,20 @@ struct DeviceRestoreView: View {
 
             titleContent
 
-            Spacer(minLength: 30)
+            if case .restoring = phase {
+                Spacer()
+                    .frame(height: 18)
+
+                OnboardingThinProgressBar(progress: combinedRestoreProgress)
+            }
+
+            Spacer(minLength: 28)
 
             bottomContent
         }
         .padding(.horizontal, 28)
-        .padding(.top, 12)
-        .padding(.bottom, 26)
+        .padding(.top, 18)
+        .padding(.bottom, 28)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onboardingRecoveryBackground()
         .task {
@@ -97,55 +98,19 @@ struct DeviceRestoreView: View {
     private var heroIcon: some View {
         switch phase {
         case .restoring:
-            ZStack {
-                Circle()
-                    .stroke(Color.btnGradientLight.opacity(0.12), lineWidth: 1)
-                    .frame(width: 118, height: 118)
-
-                Circle()
-                    .stroke(Color.btnGradientLight.opacity(0.18), lineWidth: 1)
-                    .frame(width: 86, height: 86)
-
-                Circle()
-                    .stroke(Color.btnGradientLight.opacity(0.24), lineWidth: 1)
-                    .frame(width: 58, height: 58)
-
-                Circle()
-                    .fill(Color.duskBlue.opacity(0.42))
-                    .frame(width: 58, height: 58)
-
-                Circle()
-                    .stroke(
-                        LinearGradient(
-                            colors: [.btnGradientLight, .btnGradientDark],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1.5
-                    )
-                    .frame(width: 58, height: 58)
-
-                Image(systemName: restoreIconName)
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(Color.btnGradientLight)
-                    .symbolEffect(.pulse)
-            }
+            OnboardingStatusHero(
+                systemImage: "icloud.and.arrow.down",
+                pulse: true,
+                iconSize: 22
+            )
 
         case .complete:
-            ZStack {
-                Circle()
-                    .fill(Color.lightGreen.opacity(0.16))
-                    .frame(width: 118, height: 118)
-
-                Circle()
-                    .stroke(Color.lightGreen.opacity(0.26), lineWidth: 1)
-                    .frame(width: 118, height: 118)
-
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 68, weight: .light))
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(.midnightBlue, Color.lightGreen)
-            }
+            OnboardingStatusHero(
+                systemImage: "checkmark",
+                tint: .lightGreen,
+                fillColor: Color.lightGreen.opacity(0.12),
+                iconSize: 26
+            )
 
         case .error:
             ZStack {
@@ -164,67 +129,46 @@ struct DeviceRestoreView: View {
         }
     }
 
-    private var restoreIconName: String {
-        guard let restoreProgress else { return "icloud.and.arrow.down" }
-
-        switch restoreProgress.stage {
-        case .finding:
-            return "magnifyingglass"
-        case .downloading:
-            return "arrow.down.circle"
-        case .restoring:
-            return "externaldrive.badge.checkmark"
-        }
-    }
-
     @ViewBuilder
     private var titleContent: some View {
         switch phase {
         case .restoring:
-            VStack(spacing: 12) {
-                Text("Restoring from Cloud")
-                    .font(.system(size: 40, weight: .bold, design: .rounded))
+            VStack(spacing: 10) {
+                Text("Restoring from iCloud...")
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
 
-                Text(restoringSubtitle)
-                    .font(.system(size: 20, weight: .medium, design: .rounded))
-                    .foregroundStyle(.coveLightGray.opacity(0.76))
+                Text("This might take a few minutes")
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundStyle(.coveLightGray.opacity(0.7))
                     .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 12)
 
-        case let .complete(report):
-            VStack(spacing: 12) {
-                Text("Restore Complete")
-                    .font(.system(size: 40, weight: .bold, design: .rounded))
+        case .complete:
+            VStack(spacing: 10) {
+                Text("You’re all set")
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
 
-                Text("Restored \(report.walletsRestored) wallet(s)")
-                    .font(.system(size: 20, weight: .medium, design: .rounded))
-                    .foregroundStyle(.coveLightGray.opacity(0.76))
+                Text("Your wallets have been restored.")
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundStyle(.coveLightGray.opacity(0.7))
                     .multilineTextAlignment(.center)
-
-                if report.walletsFailed > 0 {
-                    Text("\(report.walletsFailed) wallet(s) could not be restored")
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.orange.opacity(0.95))
-                        .multilineTextAlignment(.center)
-                }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 12)
 
         case .error:
             VStack(spacing: 12) {
                 Text("Restore Failed")
-                    .font(.system(size: 40, weight: .bold, design: .rounded))
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
 
                 Text("Something went wrong while restoring your wallets")
-                    .font(.system(size: 20, weight: .medium, design: .rounded))
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
                     .foregroundStyle(.coveLightGray.opacity(0.76))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -237,52 +181,25 @@ struct DeviceRestoreView: View {
     private var bottomContent: some View {
         switch phase {
         case .restoring:
-            VStack(spacing: 14) {
-                if let restoreProgress, let total = restoreProgress.total {
-                    ProgressView(
-                        value: Double(restoreProgress.completed),
-                        total: Double(max(total, 1))
-                    )
-                    .tint(.btnGradientLight)
-                    .animation(.easeInOut(duration: 0.3), value: restoreProgress.completed)
-                } else {
-                    ProgressView()
-                        .tint(.white)
+            EmptyView()
+
+        case let .complete(report):
+            VStack(spacing: 16) {
+                if report.walletsFailed > 0 {
+                    warningCard(message: "\(report.walletsFailed) wallet(s) could not be restored")
                 }
 
-                Text("Your encrypted backup is being downloaded and restored on this device.")
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
-                    .foregroundStyle(.coveLightGray.opacity(0.58))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    finishRestore()
+                } label: {
+                    Text("Done")
+                }
+                .buttonStyle(OnboardingPrimaryButtonStyle())
             }
-            .frame(maxWidth: .infinity)
-
-        case .complete:
-            EmptyView()
 
         case let .error(message):
             VStack(spacing: 18) {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-
-                    Text(message)
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
-                        .foregroundStyle(.orange.opacity(0.9))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.orange.opacity(0.1))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.orange.opacity(0.3), lineWidth: 1)
-                )
+                warningCard(message: message)
 
                 Button {
                     startRestore()
@@ -294,11 +211,36 @@ struct DeviceRestoreView: View {
         }
     }
 
+    private func warningCard(message: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.orange)
+                .padding(.top, 2)
+
+            Text(message)
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundStyle(.orange.opacity(0.92))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.orange.opacity(0.1))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+        )
+    }
+
     private func startRestore() {
         timeoutTask?.cancel()
         phase = .restoring
         hasStartedRestore = true
-        hasCompletedFlow = false
+        hasDeliveredCompletion = false
         backupManager.dispatch(action: .restoreFromCloudBackup)
 
         timeoutTask = Task {
@@ -312,6 +254,12 @@ struct DeviceRestoreView: View {
         }
     }
 
+    private func finishRestore() {
+        guard !hasDeliveredCompletion else { return }
+        hasDeliveredCompletion = true
+        onComplete()
+    }
+
     private func syncPhaseWithManager() {
         switch backupManager.status {
         case let .error(message):
@@ -322,17 +270,10 @@ struct DeviceRestoreView: View {
             }
 
         case .enabled:
-            guard let report = backupManager.restoreReport, !hasCompletedFlow else { return }
+            guard let report = backupManager.restoreReport else { return }
             timeoutTask?.cancel()
-            hasCompletedFlow = true
+            if case .complete = phase { return }
             phase = .complete(report)
-
-            Task {
-                try? await Task.sleep(for: .seconds(1))
-                await MainActor.run {
-                    onComplete()
-                }
-            }
 
         default:
             break
