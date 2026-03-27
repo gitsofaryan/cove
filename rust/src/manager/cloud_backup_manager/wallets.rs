@@ -320,11 +320,31 @@ pub(super) fn persist_enabled_cloud_backup_state(
     db: &Database,
     wallet_count: u32,
 ) -> Result<(), CloudBackupError> {
+    persist_enabled_cloud_backup_state_with_last_verified_at(
+        db,
+        wallet_count,
+        db.global_config.cloud_backup().last_verified_at(),
+    )
+}
+
+pub(super) fn persist_enabled_cloud_backup_state_reset_verification(
+    db: &Database,
+    wallet_count: u32,
+) -> Result<(), CloudBackupError> {
+    persist_enabled_cloud_backup_state_with_last_verified_at(db, wallet_count, None)
+}
+
+fn persist_enabled_cloud_backup_state_with_last_verified_at(
+    db: &Database,
+    wallet_count: u32,
+    last_verified_at: Option<u64>,
+) -> Result<(), CloudBackupError> {
     let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
     db.global_config
         .set_cloud_backup(&CloudBackup::Enabled {
             last_sync: Some(now),
             wallet_count: Some(wallet_count),
+            last_verified_at,
         })
         .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)
 }

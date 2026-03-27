@@ -19,6 +19,7 @@ struct CoveMainView: View {
     @State var scannedCode: TaggedItem<MultiFormat>? = .none
     @State var coverClearTask: Task<Void, Never>?
     @State private var showMissingPasskeyAlert = false
+    @State private var showCloudBackupVerificationPrompt = false
     @State private var pendingMissingPasskeyAlert = false
 
     @ViewBuilder
@@ -253,6 +254,14 @@ struct CoveMainView: View {
 
     private var canPresentMissingPasskeyAlert: Bool {
         phase == .active && !showCover && app.alertState == nil && app.sheetState == nil
+    }
+
+    private var canPresentCloudBackupVerificationPrompt: Bool {
+        phase == .active &&
+            !showCover &&
+            app.alertState == nil &&
+            app.sheetState == nil &&
+            !showMissingPasskeyAlert
     }
 
     private var isCloudBackupPasskeyMissing: Bool {
@@ -649,6 +658,7 @@ struct CoveMainView: View {
             app.dispatch(action: AppAction.updateFees)
             app.dispatch(action: AppAction.updateFiatPrices)
             scheduleMissingPasskeyAlert()
+            scheduleCloudBackupVerificationPrompt()
         }
 
         // PIN auth active, no biometrics, leaving app
@@ -764,6 +774,31 @@ struct CoveMainView: View {
         showMissingPasskeyAlert = false
     }
 
+    private func scheduleCloudBackupVerificationPrompt() {
+        guard app.pendingCloudBackupVerificationPrompt else {
+            showCloudBackupVerificationPrompt = false
+            return
+        }
+
+        guard canPresentCloudBackupVerificationPrompt else {
+            showCloudBackupVerificationPrompt = false
+            return
+        }
+
+        showCloudBackupVerificationPrompt = true
+    }
+
+    private func dismissCloudBackupVerificationPrompt() {
+        app.pendingCloudBackupVerificationPrompt = false
+        showCloudBackupVerificationPrompt = false
+    }
+
+    private func startCloudBackupVerification() {
+        app.pendingCloudBackupVerificationPrompt = false
+        showCloudBackupVerificationPrompt = false
+        CloudBackupManager.shared.startVerification()
+    }
+
     private func openCloudBackupScreen() {
         dismissMissingPasskeyAlert()
 
@@ -811,14 +846,31 @@ struct CoveMainView: View {
                     "Add a new passkey to restore access to your cloud backup. Until you do, your backups can't be restored."
                 )
             }
+            .alert(
+                "Verify Cloud Backup",
+                isPresented: $showCloudBackupVerificationPrompt
+            ) {
+                Button("Verify Now") {
+                    startCloudBackupVerification()
+                }
+                Button("Later", role: .cancel) {
+                    dismissCloudBackupVerificationPrompt()
+                }
+            } message: {
+                Text(
+                    "You added or imported a wallet. Verify cloud backup now to confirm the updated backup is accessible. Continuing may ask for your passkey."
+                )
+            }
             .sheet(item: $app.sheetState, content: SheetContent)
             .onOpenURL(perform: handleFileOpen)
             .onChange(of: phase, initial: true, handleScenePhaseChange)
             .onChange(of: CloudBackupManager.shared.status) { _, status in
                 if case .passkeyMissing = status {
                     scheduleMissingPasskeyAlert()
+                    showCloudBackupVerificationPrompt = false
                 } else {
                     dismissMissingPasskeyAlert()
+                    scheduleCloudBackupVerificationPrompt()
                 }
             }
             .onChange(of: CloudBackupManager.shared.recovery) { _, recovery in
@@ -834,20 +886,51 @@ struct CoveMainView: View {
                 } else if isCloudBackupPasskeyMissing {
                     scheduleMissingPasskeyAlert()
                 }
+
+                scheduleCloudBackupVerificationPrompt()
             }
             .onChange(of: showCover) { _, isShowing in
                 if !isShowing, pendingMissingPasskeyAlert {
                     scheduleMissingPasskeyAlert()
+                }
+                if isShowing {
+                    showCloudBackupVerificationPrompt = false
+                } else {
+                    scheduleCloudBackupVerificationPrompt()
                 }
             }
             .onChange(of: app.alertState) { _, alertState in
                 if alertState == nil, pendingMissingPasskeyAlert {
                     scheduleMissingPasskeyAlert()
                 }
+                if alertState == nil {
+                    scheduleCloudBackupVerificationPrompt()
+                } else {
+                    showCloudBackupVerificationPrompt = false
+                }
             }
             .onChange(of: app.sheetState) { _, sheetState in
                 if sheetState == nil, pendingMissingPasskeyAlert {
                     scheduleMissingPasskeyAlert()
+                }
+                if sheetState == nil {
+                    scheduleCloudBackupVerificationPrompt()
+                } else {
+                    showCloudBackupVerificationPrompt = false
+                }
+            }
+            .onChange(of: showMissingPasskeyAlert) { _, isShowing in
+                if isShowing {
+                    showCloudBackupVerificationPrompt = false
+                } else {
+                    scheduleCloudBackupVerificationPrompt()
+                }
+            }
+            .onChange(of: app.pendingCloudBackupVerificationPrompt) { _, shouldPrompt in
+                if shouldPrompt {
+                    scheduleCloudBackupVerificationPrompt()
+                } else {
+                    showCloudBackupVerificationPrompt = false
                 }
             }
     }

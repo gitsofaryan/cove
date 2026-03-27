@@ -11,6 +11,7 @@ use crate::{
     database::{self, Database},
     keychain::{Keychain, KeychainError},
     keys::{Descriptor, Descriptors},
+    manager::cloud_backup_manager::CLOUD_BACKUP_MANAGER,
     mnemonic::MnemonicExt as _,
     multi_format::MultiFormatError,
     tap_card::tap_signer_reader::DeriveInfo,
@@ -355,6 +356,7 @@ impl Wallet {
         )?;
 
         database.wallets.save_new_wallet_metadata(metadata.clone())?;
+        CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
 
         Ok(Self { id, metadata, network, bdk: wallet, db: Mutex::new(store.conn) })
     }
@@ -417,6 +419,7 @@ impl Wallet {
         }
 
         database.wallets.save_new_wallet_metadata(metadata.clone())?;
+        CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
 
         Ok(Self { id, metadata, network, bdk: wallet, db: Mutex::new(store.conn) })
     }
@@ -634,6 +637,7 @@ impl Wallet {
         database.global_config.select_wallet(id.clone())?;
 
         Updater::send_update(Update::ClearCachedWalletManager(id.clone()));
+        CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
         Self::try_load_persisted(id)
     }
 }

@@ -573,6 +573,8 @@ class AppManager private constructor() : FfiReconcile {
                     database = Database()
                 }
 
+                is AppStateReconcileMessage.CloudBackupVerificationRecommended -> Unit
+
                 is AppStateReconcileMessage.ColorSchemeChanged -> {
                     colorSchemeSelection = message.v1
                 }

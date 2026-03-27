@@ -13181,6 +13181,7 @@ public struct CloudBackupState: Equatable, Hashable {
     public var hasPendingUploadVerification: Bool
     public var isUnverified: Bool
     public var isConfigured: Bool
+    public var lastVerifiedAt: UInt64?
     public var detail: CloudBackupDetail?
     public var verification: VerificationState
     public var sync: SyncState
@@ -13190,7 +13191,7 @@ public struct CloudBackupState: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(status: CloudBackupStatus, progress: CloudBackupProgress?, restoreProgress: CloudBackupRestoreProgress?, restoreReport: CloudBackupRestoreReport?, syncError: String?, hasPendingUploadVerification: Bool, isUnverified: Bool, isConfigured: Bool, detail: CloudBackupDetail?, verification: VerificationState, sync: SyncState, recovery: RecoveryState, cloudOnly: CloudOnlyState, cloudOnlyOperation: CloudOnlyOperation) {
+    public init(status: CloudBackupStatus, progress: CloudBackupProgress?, restoreProgress: CloudBackupRestoreProgress?, restoreReport: CloudBackupRestoreReport?, syncError: String?, hasPendingUploadVerification: Bool, isUnverified: Bool, isConfigured: Bool, lastVerifiedAt: UInt64?, detail: CloudBackupDetail?, verification: VerificationState, sync: SyncState, recovery: RecoveryState, cloudOnly: CloudOnlyState, cloudOnlyOperation: CloudOnlyOperation) {
         self.status = status
         self.progress = progress
         self.restoreProgress = restoreProgress
@@ -13199,6 +13200,7 @@ public struct CloudBackupState: Equatable, Hashable {
         self.hasPendingUploadVerification = hasPendingUploadVerification
         self.isUnverified = isUnverified
         self.isConfigured = isConfigured
+        self.lastVerifiedAt = lastVerifiedAt
         self.detail = detail
         self.verification = verification
         self.sync = sync
@@ -13231,6 +13233,7 @@ public struct FfiConverterTypeCloudBackupState: FfiConverterRustBuffer {
                 hasPendingUploadVerification: FfiConverterBool.read(from: &buf), 
                 isUnverified: FfiConverterBool.read(from: &buf), 
                 isConfigured: FfiConverterBool.read(from: &buf), 
+                lastVerifiedAt: FfiConverterOptionUInt64.read(from: &buf), 
                 detail: FfiConverterOptionTypeCloudBackupDetail.read(from: &buf), 
                 verification: FfiConverterTypeVerificationState.read(from: &buf), 
                 sync: FfiConverterTypeSyncState.read(from: &buf), 
@@ -13249,6 +13252,7 @@ public struct FfiConverterTypeCloudBackupState: FfiConverterRustBuffer {
         FfiConverterBool.write(value.hasPendingUploadVerification, into: &buf)
         FfiConverterBool.write(value.isUnverified, into: &buf)
         FfiConverterBool.write(value.isConfigured, into: &buf)
+        FfiConverterOptionUInt64.write(value.lastVerifiedAt, into: &buf)
         FfiConverterOptionTypeCloudBackupDetail.write(value.detail, into: &buf)
         FfiConverterTypeVerificationState.write(value.verification, into: &buf)
         FfiConverterTypeSyncState.write(value.sync, into: &buf)
@@ -16478,6 +16482,7 @@ public enum AppStateReconcileMessage {
     case routeUpdated([Route]
     )
     case databaseUpdated
+    case cloudBackupVerificationRecommended
     case colorSchemeChanged(ColorSchemeSelection
     )
     case selectedNodeChanged(Node
@@ -16529,40 +16534,42 @@ public struct FfiConverterTypeAppStateReconcileMessage: FfiConverterRustBuffer {
         
         case 3: return .databaseUpdated
         
-        case 4: return .colorSchemeChanged(try FfiConverterTypeColorSchemeSelection.read(from: &buf)
+        case 4: return .cloudBackupVerificationRecommended
+        
+        case 5: return .colorSchemeChanged(try FfiConverterTypeColorSchemeSelection.read(from: &buf)
         )
         
-        case 5: return .selectedNodeChanged(try FfiConverterTypeNode.read(from: &buf)
+        case 6: return .selectedNodeChanged(try FfiConverterTypeNode.read(from: &buf)
         )
         
-        case 6: return .selectedNetworkChanged(try FfiConverterTypeNetwork.read(from: &buf)
+        case 7: return .selectedNetworkChanged(try FfiConverterTypeNetwork.read(from: &buf)
         )
         
-        case 7: return .fiatPricesChanged(try FfiConverterTypePriceResponse.read(from: &buf)
+        case 8: return .fiatPricesChanged(try FfiConverterTypePriceResponse.read(from: &buf)
         )
         
-        case 8: return .feesChanged(try FfiConverterTypeFeeResponse.read(from: &buf)
+        case 9: return .feesChanged(try FfiConverterTypeFeeResponse.read(from: &buf)
         )
         
-        case 9: return .fiatCurrencyChanged(try FfiConverterTypeFiatCurrency.read(from: &buf)
+        case 10: return .fiatCurrencyChanged(try FfiConverterTypeFiatCurrency.read(from: &buf)
         )
         
-        case 10: return .walletModeChanged(try FfiConverterTypeWalletMode.read(from: &buf)
+        case 11: return .walletModeChanged(try FfiConverterTypeWalletMode.read(from: &buf)
         )
         
-        case 11: return .pushedRoute(try FfiConverterTypeRoute.read(from: &buf)
+        case 12: return .pushedRoute(try FfiConverterTypeRoute.read(from: &buf)
         )
         
-        case 12: return .acceptedTerms
+        case 13: return .acceptedTerms
         
-        case 13: return .walletsChanged
+        case 14: return .walletsChanged
         
-        case 14: return .clearCachedWalletManager(try FfiConverterTypeWalletId.read(from: &buf)
+        case 15: return .clearCachedWalletManager(try FfiConverterTypeWalletId.read(from: &buf)
         )
         
-        case 15: return .showLoadingPopup
+        case 16: return .showLoadingPopup
         
-        case 16: return .hideLoadingPopup
+        case 17: return .hideLoadingPopup
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -16587,65 +16594,69 @@ public struct FfiConverterTypeAppStateReconcileMessage: FfiConverterRustBuffer {
             writeInt(&buf, Int32(3))
         
         
-        case let .colorSchemeChanged(v1):
+        case .cloudBackupVerificationRecommended:
             writeInt(&buf, Int32(4))
+        
+        
+        case let .colorSchemeChanged(v1):
+            writeInt(&buf, Int32(5))
             FfiConverterTypeColorSchemeSelection.write(v1, into: &buf)
             
         
         case let .selectedNodeChanged(v1):
-            writeInt(&buf, Int32(5))
+            writeInt(&buf, Int32(6))
             FfiConverterTypeNode.write(v1, into: &buf)
             
         
         case let .selectedNetworkChanged(v1):
-            writeInt(&buf, Int32(6))
+            writeInt(&buf, Int32(7))
             FfiConverterTypeNetwork.write(v1, into: &buf)
             
         
         case let .fiatPricesChanged(v1):
-            writeInt(&buf, Int32(7))
+            writeInt(&buf, Int32(8))
             FfiConverterTypePriceResponse.write(v1, into: &buf)
             
         
         case let .feesChanged(v1):
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(9))
             FfiConverterTypeFeeResponse.write(v1, into: &buf)
             
         
         case let .fiatCurrencyChanged(v1):
-            writeInt(&buf, Int32(9))
+            writeInt(&buf, Int32(10))
             FfiConverterTypeFiatCurrency.write(v1, into: &buf)
             
         
         case let .walletModeChanged(v1):
-            writeInt(&buf, Int32(10))
+            writeInt(&buf, Int32(11))
             FfiConverterTypeWalletMode.write(v1, into: &buf)
             
         
         case let .pushedRoute(v1):
-            writeInt(&buf, Int32(11))
+            writeInt(&buf, Int32(12))
             FfiConverterTypeRoute.write(v1, into: &buf)
             
         
         case .acceptedTerms:
-            writeInt(&buf, Int32(12))
-        
-        
-        case .walletsChanged:
             writeInt(&buf, Int32(13))
         
         
-        case let .clearCachedWalletManager(v1):
+        case .walletsChanged:
             writeInt(&buf, Int32(14))
+        
+        
+        case let .clearCachedWalletManager(v1):
+            writeInt(&buf, Int32(15))
             FfiConverterTypeWalletId.write(v1, into: &buf)
             
         
         case .showLoadingPopup:
-            writeInt(&buf, Int32(15))
+            writeInt(&buf, Int32(16))
         
         
         case .hideLoadingPopup:
-            writeInt(&buf, Int32(16))
+            writeInt(&buf, Int32(17))
         
         }
     }
@@ -18003,11 +18014,11 @@ public func FfiConverterTypeCkTapError_lower(_ value: CkTapError) -> RustBuffer 
 public enum CloudBackup: Equatable, Hashable {
     
     case disabled
-    case enabled(lastSync: UInt64?, walletCount: UInt32?
+    case enabled(lastSync: UInt64?, walletCount: UInt32?, lastVerifiedAt: UInt64?
     )
-    case unverified(lastSync: UInt64?, walletCount: UInt32?
+    case unverified(lastSync: UInt64?, walletCount: UInt32?, lastVerifiedAt: UInt64?
     )
-    case passkeyMissing(lastSync: UInt64?, walletCount: UInt32?
+    case passkeyMissing(lastSync: UInt64?, walletCount: UInt32?, lastVerifiedAt: UInt64?
     )
 
 
@@ -18032,13 +18043,13 @@ public struct FfiConverterTypeCloudBackup: FfiConverterRustBuffer {
         
         case 1: return .disabled
         
-        case 2: return .enabled(lastSync: try FfiConverterOptionUInt64.read(from: &buf), walletCount: try FfiConverterOptionUInt32.read(from: &buf)
+        case 2: return .enabled(lastSync: try FfiConverterOptionUInt64.read(from: &buf), walletCount: try FfiConverterOptionUInt32.read(from: &buf), lastVerifiedAt: try FfiConverterOptionUInt64.read(from: &buf)
         )
         
-        case 3: return .unverified(lastSync: try FfiConverterOptionUInt64.read(from: &buf), walletCount: try FfiConverterOptionUInt32.read(from: &buf)
+        case 3: return .unverified(lastSync: try FfiConverterOptionUInt64.read(from: &buf), walletCount: try FfiConverterOptionUInt32.read(from: &buf), lastVerifiedAt: try FfiConverterOptionUInt64.read(from: &buf)
         )
         
-        case 4: return .passkeyMissing(lastSync: try FfiConverterOptionUInt64.read(from: &buf), walletCount: try FfiConverterOptionUInt32.read(from: &buf)
+        case 4: return .passkeyMissing(lastSync: try FfiConverterOptionUInt64.read(from: &buf), walletCount: try FfiConverterOptionUInt32.read(from: &buf), lastVerifiedAt: try FfiConverterOptionUInt64.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -18053,22 +18064,25 @@ public struct FfiConverterTypeCloudBackup: FfiConverterRustBuffer {
             writeInt(&buf, Int32(1))
         
         
-        case let .enabled(lastSync,walletCount):
+        case let .enabled(lastSync,walletCount,lastVerifiedAt):
             writeInt(&buf, Int32(2))
             FfiConverterOptionUInt64.write(lastSync, into: &buf)
             FfiConverterOptionUInt32.write(walletCount, into: &buf)
+            FfiConverterOptionUInt64.write(lastVerifiedAt, into: &buf)
             
         
-        case let .unverified(lastSync,walletCount):
+        case let .unverified(lastSync,walletCount,lastVerifiedAt):
             writeInt(&buf, Int32(3))
             FfiConverterOptionUInt64.write(lastSync, into: &buf)
             FfiConverterOptionUInt32.write(walletCount, into: &buf)
+            FfiConverterOptionUInt64.write(lastVerifiedAt, into: &buf)
             
         
-        case let .passkeyMissing(lastSync,walletCount):
+        case let .passkeyMissing(lastSync,walletCount,lastVerifiedAt):
             writeInt(&buf, Int32(4))
             FfiConverterOptionUInt64.write(lastSync, into: &buf)
             FfiConverterOptionUInt32.write(walletCount, into: &buf)
+            FfiConverterOptionUInt64.write(lastVerifiedAt, into: &buf)
             
         }
     }
@@ -18162,8 +18176,7 @@ public func FfiConverterTypeCloudBackupDetailResult_lower(_ value: CloudBackupDe
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum CloudBackupReconcileMessage: Equatable, Hashable {
     
@@ -18304,8 +18317,7 @@ public func FfiConverterTypeCloudBackupReconcileMessage_lower(_ value: CloudBack
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum CloudBackupRestoreStage: Equatable, Hashable {
     
@@ -18378,8 +18390,7 @@ public func FfiConverterTypeCloudBackupRestoreStage_lower(_ value: CloudBackupRe
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum CloudBackupStatus: Equatable, Hashable {
     
@@ -18476,8 +18487,7 @@ public func FfiConverterTypeCloudBackupStatus_lower(_ value: CloudBackupStatus) 
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum CloudBackupWalletStatus: Equatable, Hashable {
     
@@ -18550,8 +18560,7 @@ public func FfiConverterTypeCloudBackupWalletStatus_lower(_ value: CloudBackupWa
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum CloudOnlyOperation: Equatable, Hashable {
     
@@ -18630,8 +18639,7 @@ public func FfiConverterTypeCloudOnlyOperation_lower(_ value: CloudOnlyOperation
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum CloudOnlyState: Equatable, Hashable {
     
@@ -18707,8 +18715,7 @@ public func FfiConverterTypeCloudOnlyState_lower(_ value: CloudOnlyState) -> Rus
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum CoinControlListSort: Equatable, Hashable {
     
@@ -19640,8 +19647,7 @@ public func FfiConverterTypeDatabaseError_lower(_ value: DatabaseError) -> RustB
     return FfiConverterTypeDatabaseError.lower(value)
 }
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum DeepVerificationResult: Equatable, Hashable {
     
@@ -23330,8 +23336,7 @@ public func FfiConverterTypeOnboardingAction_lower(_ value: OnboardingAction) ->
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum OnboardingReconcileMessage: Equatable, Hashable {
     
@@ -23410,8 +23415,7 @@ public func FfiConverterTypeOnboardingReconcileMessage_lower(_ value: Onboarding
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum OnboardingStep: Equatable, Hashable {
     
@@ -23491,8 +23495,7 @@ public func FfiConverterTypeOnboardingStep_lower(_ value: OnboardingStep) -> Rus
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum PendingOrConfirmed: Equatable, Hashable {
     
@@ -23856,8 +23859,7 @@ public func FfiConverterTypeRecoveryAction_lower(_ value: RecoveryAction) -> Rus
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum RecoveryState: Equatable, Hashable {
     
@@ -23937,8 +23939,7 @@ public func FfiConverterTypeRecoveryState_lower(_ value: RecoveryState) -> RustB
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum Route {
     
@@ -26898,8 +26899,7 @@ public func FfiConverterTypeSyncState_lower(_ value: SyncState) -> RustBuffer {
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum TapSignerCmd {
     
@@ -28373,8 +28373,7 @@ public func FfiConverterTypeVerificationFailureKind_lower(_ value: VerificationF
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum VerificationState: Equatable, Hashable {
     
@@ -28474,8 +28473,7 @@ public func FfiConverterTypeVerificationState_lower(_ value: VerificationState) 
 }
 
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 
 public enum WalletAddressType: Equatable, Hashable, CustomStringConvertible {
     

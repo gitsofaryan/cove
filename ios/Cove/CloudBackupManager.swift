@@ -9,6 +9,7 @@ extension WeakReconciler: CloudBackupManagerReconciler where Reconciler == Cloud
 final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @unchecked Sendable {
     static let shared = CloudBackupManager()
     private static let passkeySheetDismissDelay: TimeInterval = 0.8
+    private static let staleVerificationThreshold: TimeInterval = 60 * 60 * 24 * 30
 
     typealias Message = CloudBackupReconcileMessage
 
@@ -66,6 +67,16 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
 
     var isConfigured: Bool {
         currentState.isConfigured
+    }
+
+    var lastVerifiedAt: Date? {
+        currentState.lastVerifiedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+    }
+
+    var isVerificationStale: Bool {
+        guard case .enabled = status, !isUnverified else { return false }
+        guard let lastVerifiedAt else { return true }
+        return Date.now.timeIntervalSince(lastVerifiedAt) >= Self.staleVerificationThreshold
     }
 
     var detail: CloudBackupDetail? {

@@ -29382,6 +29382,9 @@ sealed class AppStateReconcileMessage: Disposable  {
     object DatabaseUpdated : AppStateReconcileMessage()
     
     
+    object CloudBackupVerificationRecommended : AppStateReconcileMessage()
+    
+    
     data class ColorSchemeChanged(
         val v1: org.bitcoinppl.cove_core.types.ColorSchemeSelection) : AppStateReconcileMessage()
         
@@ -29497,6 +29500,8 @@ sealed class AppStateReconcileMessage: Disposable  {
             }
             is AppStateReconcileMessage.DatabaseUpdated -> {// Nothing to destroy
             }
+            is AppStateReconcileMessage.CloudBackupVerificationRecommended -> {// Nothing to destroy
+            }
             is AppStateReconcileMessage.ColorSchemeChanged -> {
                 
     Disposable.destroy(
@@ -29593,37 +29598,38 @@ public object FfiConverterTypeAppStateReconcileMessage : FfiConverterRustBuffer<
                 FfiConverterSequenceTypeRoute.read(buf),
                 )
             3 -> AppStateReconcileMessage.DatabaseUpdated
-            4 -> AppStateReconcileMessage.ColorSchemeChanged(
+            4 -> AppStateReconcileMessage.CloudBackupVerificationRecommended
+            5 -> AppStateReconcileMessage.ColorSchemeChanged(
                 FfiConverterTypeColorSchemeSelection.read(buf),
                 )
-            5 -> AppStateReconcileMessage.SelectedNodeChanged(
+            6 -> AppStateReconcileMessage.SelectedNodeChanged(
                 FfiConverterTypeNode.read(buf),
                 )
-            6 -> AppStateReconcileMessage.SelectedNetworkChanged(
+            7 -> AppStateReconcileMessage.SelectedNetworkChanged(
                 FfiConverterTypeNetwork.read(buf),
                 )
-            7 -> AppStateReconcileMessage.FiatPricesChanged(
+            8 -> AppStateReconcileMessage.FiatPricesChanged(
                 FfiConverterTypePriceResponse.read(buf),
                 )
-            8 -> AppStateReconcileMessage.FeesChanged(
+            9 -> AppStateReconcileMessage.FeesChanged(
                 FfiConverterTypeFeeResponse.read(buf),
                 )
-            9 -> AppStateReconcileMessage.FiatCurrencyChanged(
+            10 -> AppStateReconcileMessage.FiatCurrencyChanged(
                 FfiConverterTypeFiatCurrency.read(buf),
                 )
-            10 -> AppStateReconcileMessage.WalletModeChanged(
+            11 -> AppStateReconcileMessage.WalletModeChanged(
                 FfiConverterTypeWalletMode.read(buf),
                 )
-            11 -> AppStateReconcileMessage.PushedRoute(
+            12 -> AppStateReconcileMessage.PushedRoute(
                 FfiConverterTypeRoute.read(buf),
                 )
-            12 -> AppStateReconcileMessage.AcceptedTerms
-            13 -> AppStateReconcileMessage.WalletsChanged
-            14 -> AppStateReconcileMessage.ClearCachedWalletManager(
+            13 -> AppStateReconcileMessage.AcceptedTerms
+            14 -> AppStateReconcileMessage.WalletsChanged
+            15 -> AppStateReconcileMessage.ClearCachedWalletManager(
                 FfiConverterTypeWalletId.read(buf),
                 )
-            15 -> AppStateReconcileMessage.ShowLoadingPopup
-            16 -> AppStateReconcileMessage.HideLoadingPopup
+            16 -> AppStateReconcileMessage.ShowLoadingPopup
+            17 -> AppStateReconcileMessage.HideLoadingPopup
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -29645,6 +29651,12 @@ public object FfiConverterTypeAppStateReconcileMessage : FfiConverterRustBuffer<
             )
         }
         is AppStateReconcileMessage.DatabaseUpdated -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppStateReconcileMessage.CloudBackupVerificationRecommended -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
@@ -29756,65 +29768,69 @@ public object FfiConverterTypeAppStateReconcileMessage : FfiConverterRustBuffer<
                 buf.putInt(3)
                 Unit
             }
-            is AppStateReconcileMessage.ColorSchemeChanged -> {
+            is AppStateReconcileMessage.CloudBackupVerificationRecommended -> {
                 buf.putInt(4)
+                Unit
+            }
+            is AppStateReconcileMessage.ColorSchemeChanged -> {
+                buf.putInt(5)
                 FfiConverterTypeColorSchemeSelection.write(value.v1, buf)
                 Unit
             }
             is AppStateReconcileMessage.SelectedNodeChanged -> {
-                buf.putInt(5)
+                buf.putInt(6)
                 FfiConverterTypeNode.write(value.v1, buf)
                 Unit
             }
             is AppStateReconcileMessage.SelectedNetworkChanged -> {
-                buf.putInt(6)
+                buf.putInt(7)
                 FfiConverterTypeNetwork.write(value.v1, buf)
                 Unit
             }
             is AppStateReconcileMessage.FiatPricesChanged -> {
-                buf.putInt(7)
+                buf.putInt(8)
                 FfiConverterTypePriceResponse.write(value.v1, buf)
                 Unit
             }
             is AppStateReconcileMessage.FeesChanged -> {
-                buf.putInt(8)
+                buf.putInt(9)
                 FfiConverterTypeFeeResponse.write(value.v1, buf)
                 Unit
             }
             is AppStateReconcileMessage.FiatCurrencyChanged -> {
-                buf.putInt(9)
+                buf.putInt(10)
                 FfiConverterTypeFiatCurrency.write(value.v1, buf)
                 Unit
             }
             is AppStateReconcileMessage.WalletModeChanged -> {
-                buf.putInt(10)
+                buf.putInt(11)
                 FfiConverterTypeWalletMode.write(value.v1, buf)
                 Unit
             }
             is AppStateReconcileMessage.PushedRoute -> {
-                buf.putInt(11)
+                buf.putInt(12)
                 FfiConverterTypeRoute.write(value.v1, buf)
                 Unit
             }
             is AppStateReconcileMessage.AcceptedTerms -> {
-                buf.putInt(12)
-                Unit
-            }
-            is AppStateReconcileMessage.WalletsChanged -> {
                 buf.putInt(13)
                 Unit
             }
-            is AppStateReconcileMessage.ClearCachedWalletManager -> {
+            is AppStateReconcileMessage.WalletsChanged -> {
                 buf.putInt(14)
+                Unit
+            }
+            is AppStateReconcileMessage.ClearCachedWalletManager -> {
+                buf.putInt(15)
                 FfiConverterTypeWalletId.write(value.v1, buf)
                 Unit
             }
             is AppStateReconcileMessage.ShowLoadingPopup -> {
-                buf.putInt(15)
+                buf.putInt(16)
                 Unit
             }
             is AppStateReconcileMessage.HideLoadingPopup -> {
-                buf.putInt(16)
+                buf.putInt(17)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -49180,5 +49196,4 @@ object UrExceptionExternalErrorHandler : UniffiRustCallStatusErrorHandler<UrExce
     )
     }
     
-
 

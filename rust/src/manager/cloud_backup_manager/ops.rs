@@ -11,8 +11,8 @@ use super::cloud_inventory::CloudWalletInventory;
 use super::wallets::{
     DownloadedWalletBackup, NamespaceMatchOutcome, all_local_wallets, discover_or_create_prf_key,
     download_wallet_backup, obtain_prf_key, persist_enabled_cloud_backup_state,
-    restore_downloaded_wallet_for_restore, restore_single_wallet, try_match_namespace_with_passkey,
-    upload_all_wallets,
+    persist_enabled_cloud_backup_state_reset_verification, restore_downloaded_wallet_for_restore,
+    restore_single_wallet, try_match_namespace_with_passkey, upload_all_wallets,
 };
 use cove_device::keychain::CSPP_NAMESPACE_ID_KEY;
 
@@ -161,16 +161,8 @@ impl RustCloudBackupManager {
             cloud.list_wallet_backups(namespace).map_err_str(CloudBackupError::Cloud)?;
         let wallet_count = wallet_record_ids.len() as u32;
         let db = Database::global();
-        let last_sync = match db.global_config.cloud_backup() {
-            CloudBackup::Enabled { last_sync, .. }
-            | CloudBackup::Unverified { last_sync, .. }
-            | CloudBackup::PasskeyMissing { last_sync, .. } => last_sync,
-            CloudBackup::Disabled => None,
-        };
-        let _ = db.global_config.set_cloud_backup(&CloudBackup::Enabled {
-            last_sync,
-            wallet_count: Some(wallet_count),
-        });
+        let current = db.global_config.cloud_backup();
+        let _ = db.global_config.set_cloud_backup(&current.with_wallet_count(Some(wallet_count)));
 
         info!("Deleted cloud wallet {record_id}");
         Ok(())
@@ -300,7 +292,7 @@ impl RustCloudBackupManager {
             )
             .map_err_prefix("save cspp credentials", CloudBackupError::Internal)?;
 
-        persist_enabled_cloud_backup_state(&db, wallet_count)?;
+        persist_enabled_cloud_backup_state_reset_verification(&db, wallet_count)?;
         self.enqueue_pending_uploads(&matched.namespace_id, uploaded_wallet_record_ids)?;
 
         self.send(Message::EnableComplete);
@@ -448,6 +440,7 @@ impl RustCloudBackupManager {
             .set_cloud_backup(&CloudBackup::Enabled {
                 last_sync: Some(now),
                 wallet_count: Some(wallet_count),
+                last_verified_at: None,
             })
             .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)?;
 
@@ -523,7 +516,10 @@ impl RustCloudBackupManager {
         keychain
             .save(CSPP_NAMESPACE_ID_KEY.into(), namespace_id.clone())
             .map_err_prefix("save namespace_id", CloudBackupError::Internal)?;
-        persist_enabled_cloud_backup_state(&db, uploaded_wallet_record_ids.len() as u32)?;
+        persist_enabled_cloud_backup_state_reset_verification(
+            &db,
+            uploaded_wallet_record_ids.len() as u32,
+        )?;
         self.enqueue_pending_uploads(
             &namespace_id,
             std::iter::once(super::cspp_master_key_record_id()).chain(uploaded_wallet_record_ids),

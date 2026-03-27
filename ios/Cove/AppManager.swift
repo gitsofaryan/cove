@@ -15,6 +15,7 @@ private let walletModeChangeDelayMs = 250
     var wallets: [WalletMetadata] = []
     var isSidebarVisible = false
     var asyncRuntimeReady = false
+    var pendingCloudBackupVerificationPrompt = false
 
     var alertState: TaggedItem<AppAlertState>? = .none
     var sheetState: TaggedItem<AppSheetState>? = .none
@@ -249,6 +250,9 @@ private let walletModeChangeDelayMs = 250
 
             case .databaseUpdated:
                 database = Database()
+
+            case .cloudBackupVerificationRecommended:
+                pendingCloudBackupVerificationPrompt = true
 
             case let .colorSchemeChanged(colorSchemeSelection):
                 self.colorSchemeSelection = colorSchemeSelection

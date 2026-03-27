@@ -176,6 +176,7 @@ pub struct CloudBackupState {
     pub has_pending_upload_verification: bool,
     pub is_unverified: bool,
     pub is_configured: bool,
+    pub last_verified_at: Option<u64>,
     pub detail: Option<CloudBackupDetail>,
     pub verification: VerificationState,
     pub sync: SyncState,
@@ -195,6 +196,7 @@ impl Default for CloudBackupState {
             has_pending_upload_verification: false,
             is_unverified: false,
             is_configured: false,
+            last_verified_at: None,
             detail: None,
             verification: VerificationState::Idle,
             sync: SyncState::Idle,
@@ -261,6 +263,7 @@ impl RustCloudBackupManager {
         let db_state = Database::global().global_config.cloud_backup();
         state.is_unverified = matches!(db_state, CloudBackup::Unverified { .. });
         state.is_configured = !matches!(db_state, CloudBackup::Disabled);
+        state.last_verified_at = db_state.last_verified_at();
     }
 
     fn apply_message_to_state(&self, message: &Message) {

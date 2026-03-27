@@ -284,9 +284,21 @@ struct MainSettingsScreen: View {
                                 .foregroundStyle(.blue)
                             Text("Cloud Backup Verifying")
                         } else {
-                            Image(systemName: "checkmark.icloud")
-                                .foregroundStyle(.green)
-                            Text("Cloud Backup Enabled")
+                            Image(
+                                systemName: manager.isVerificationStale
+                                    ? "exclamationmark.icloud" : "checkmark.icloud"
+                            )
+                            .foregroundStyle(manager.isVerificationStale ? .orange : .green)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Cloud Backup Enabled")
+
+                                if manager.isVerificationStale {
+                                    Text("Verification recommended")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                }
+                            }
                         }
                         Spacer()
                         Image(systemName: "chevron.right")

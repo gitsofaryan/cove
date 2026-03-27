@@ -9,6 +9,7 @@ use crate::{
     app::reconcile::{Update, Updater},
     database::{self, Database},
     keychain::{Keychain, KeychainError},
+    manager::cloud_backup_manager::CLOUD_BACKUP_MANAGER,
     mnemonic::MnemonicExt as _,
     wallet::{
         Wallet,
@@ -134,6 +135,7 @@ impl RustImportWalletManager {
 
             Wallet::try_new_persisted_and_selected(wallet_metadata.clone(), mnemonic.clone(), None)
                 .map_err_str(ImportWalletError::WalletImportError)?;
+            CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
 
             return Ok(wallet_metadata);
         }
@@ -178,6 +180,7 @@ impl RustImportWalletManager {
         Database::global().wallets.update_wallet_metadata(metadata.clone())?;
         Database::global().global_config.select_wallet(id.clone())?;
         Updater::send_update(Update::ClearCachedWalletManager(id));
+        CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
 
         Ok(metadata)
     }

@@ -6,6 +6,7 @@ use parking_lot::RwLock;
 use crate::{
     database::{self, Database},
     keychain::KeychainError,
+    manager::cloud_backup_manager::CLOUD_BACKUP_MANAGER,
     mnemonic::{GroupedWord, MnemonicExt as _, NumberOfBip39Words, WordAccess as _},
     multi_format::MultiFormatError,
     pending_wallet::PendingWallet,
@@ -129,6 +130,7 @@ impl RustPendingWalletManager {
             self.state.read().wallet.mnemonic.clone(),
             None,
         )?;
+        CLOUD_BACKUP_MANAGER.mark_verification_required_after_wallet_change();
 
         Ok(wallet.metadata)
     }

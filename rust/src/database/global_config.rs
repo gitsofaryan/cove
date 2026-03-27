@@ -29,16 +29,22 @@ pub enum CloudBackup {
         last_sync: Option<u64>,
         #[serde(default)]
         wallet_count: Option<u32>,
+        #[serde(default)]
+        last_verified_at: Option<u64>,
     },
     Unverified {
         last_sync: Option<u64>,
         #[serde(default)]
         wallet_count: Option<u32>,
+        #[serde(default)]
+        last_verified_at: Option<u64>,
     },
     PasskeyMissing {
         last_sync: Option<u64>,
         #[serde(default)]
         wallet_count: Option<u32>,
+        #[serde(default)]
+        last_verified_at: Option<u64>,
     },
 }
 
@@ -52,18 +58,33 @@ impl CloudBackup {
         }
     }
 
+    pub(crate) fn last_verified_at(&self) -> Option<u64> {
+        match self {
+            Self::Enabled { last_verified_at, .. }
+            | Self::Unverified { last_verified_at, .. }
+            | Self::PasskeyMissing { last_verified_at, .. } => *last_verified_at,
+            Self::Disabled => None,
+        }
+    }
+
     pub(crate) fn with_wallet_count(&self, wallet_count: Option<u32>) -> Self {
         match self {
             Self::Disabled => Self::Disabled,
-            Self::Enabled { last_sync, .. } => {
-                Self::Enabled { last_sync: *last_sync, wallet_count }
-            }
-            Self::Unverified { last_sync, .. } => {
-                Self::Unverified { last_sync: *last_sync, wallet_count }
-            }
-            Self::PasskeyMissing { last_sync, .. } => {
-                Self::PasskeyMissing { last_sync: *last_sync, wallet_count }
-            }
+            Self::Enabled { last_sync, last_verified_at, .. } => Self::Enabled {
+                last_sync: *last_sync,
+                wallet_count,
+                last_verified_at: *last_verified_at,
+            },
+            Self::Unverified { last_sync, last_verified_at, .. } => Self::Unverified {
+                last_sync: *last_sync,
+                wallet_count,
+                last_verified_at: *last_verified_at,
+            },
+            Self::PasskeyMissing { last_sync, last_verified_at, .. } => Self::PasskeyMissing {
+                last_sync: *last_sync,
+                wallet_count,
+                last_verified_at: *last_verified_at,
+            },
         }
     }
 }
@@ -456,18 +477,29 @@ mod tests {
         let parsed: CloudBackup = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, CloudBackup::Disabled);
 
-        let enabled_no_sync = CloudBackup::Enabled { last_sync: None, wallet_count: None };
+        let enabled_no_sync =
+            CloudBackup::Enabled { last_sync: None, wallet_count: None, last_verified_at: None };
         let json = serde_json::to_string(&enabled_no_sync).unwrap();
         let parsed: CloudBackup = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, CloudBackup::Enabled { last_sync: None, wallet_count: None });
+        assert_eq!(
+            parsed,
+            CloudBackup::Enabled { last_sync: None, wallet_count: None, last_verified_at: None }
+        );
 
-        let enabled_with_sync =
-            CloudBackup::Enabled { last_sync: Some(1700000000), wallet_count: Some(3) };
+        let enabled_with_sync = CloudBackup::Enabled {
+            last_sync: Some(1700000000),
+            wallet_count: Some(3),
+            last_verified_at: Some(1700000010),
+        };
         let json = serde_json::to_string(&enabled_with_sync).unwrap();
         let parsed: CloudBackup = serde_json::from_str(&json).unwrap();
         assert_eq!(
             parsed,
-            CloudBackup::Enabled { last_sync: Some(1700000000), wallet_count: Some(3) }
+            CloudBackup::Enabled {
+                last_sync: Some(1700000000),
+                wallet_count: Some(3),
+                last_verified_at: Some(1700000010),
+            }
         );
     }
 
@@ -480,7 +512,11 @@ mod tests {
         let parsed: CloudBackup = serde_json::from_str(old_json).unwrap();
         assert_eq!(
             parsed,
-            CloudBackup::Enabled { last_sync: Some(1700000000), wallet_count: None }
+            CloudBackup::Enabled {
+                last_sync: Some(1700000000),
+                wallet_count: None,
+                last_verified_at: None,
+            }
         );
     }
 
@@ -488,10 +524,18 @@ mod tests {
     fn test_cloud_backup_with_wallet_count_preserves_enabled() {
         use super::CloudBackup;
 
-        let state = CloudBackup::Enabled { last_sync: Some(1700000000), wallet_count: None };
+        let state = CloudBackup::Enabled {
+            last_sync: Some(1700000000),
+            wallet_count: None,
+            last_verified_at: Some(1700000010),
+        };
         assert_eq!(
             state.with_wallet_count(Some(5)),
-            CloudBackup::Enabled { last_sync: Some(1700000000), wallet_count: Some(5) }
+            CloudBackup::Enabled {
+                last_sync: Some(1700000000),
+                wallet_count: Some(5),
+                last_verified_at: Some(1700000010),
+            }
         );
     }
 
@@ -499,10 +543,18 @@ mod tests {
     fn test_cloud_backup_with_wallet_count_preserves_unverified() {
         use super::CloudBackup;
 
-        let state = CloudBackup::Unverified { last_sync: Some(1700000000), wallet_count: None };
+        let state = CloudBackup::Unverified {
+            last_sync: Some(1700000000),
+            wallet_count: None,
+            last_verified_at: Some(1700000010),
+        };
         assert_eq!(
             state.with_wallet_count(Some(5)),
-            CloudBackup::Unverified { last_sync: Some(1700000000), wallet_count: Some(5) }
+            CloudBackup::Unverified {
+                last_sync: Some(1700000000),
+                wallet_count: Some(5),
+                last_verified_at: Some(1700000010),
+            }
         );
     }
 }
