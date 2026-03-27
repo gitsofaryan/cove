@@ -370,8 +370,18 @@ alias iac := install-android-clean
 
 # Run iOS app
 [group('util')]
-run-ios:
-    just xtask run-ios && just notf "done run ios"
+run-ios *args:
+    just xtask run-ios {{args}} && just notf "done run ios"
+
+[private]
+alias ri := run-ios
+
+[group('util')]
+build-run-ios:
+    just bidd && just ri
+
+[private]
+alias bri := build-run-ios
 
 # Show logcat for cove process
 [group('util')]

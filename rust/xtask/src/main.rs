@@ -68,9 +68,21 @@ enum Commands {
         sign: bool,
     },
 
-    /// Build and run iOS app in simulator
+    /// Build and run iOS app on a device or in the simulator
     #[command(name = "run-ios")]
-    RunIos,
+    RunIos {
+        /// Run in the iOS simulator instead of on a physical device
+        #[arg(long)]
+        simulator: bool,
+
+        /// Physical device name to target
+        #[arg(long, env = "IOS_DEVICE_NAME")]
+        device_name: Option<String>,
+
+        /// Physical device UDID to target
+        #[arg(long, env = "IOS_DEVICE_UDID")]
+        udid: Option<String>,
+    },
 
     /// Install required build dependencies (cargo-ndk, etc.)
     #[command(name = "install-deps")]
@@ -161,7 +173,10 @@ fn main() -> Result<()> {
             ios::build_ios(ios_build_type, device, sign, cli.verbose)
         }
 
-        Commands::RunIos => ios::run_ios(cli.verbose),
+        Commands::RunIos { simulator, device_name, udid } => {
+            let options = ios::IosRunOptions::new(simulator, device_name, udid);
+            ios::run_ios(options, cli.verbose)
+        }
 
         Commands::InstallDeps => install_deps(cli.verbose),
 
