@@ -7,7 +7,7 @@ struct DeviceRestoreView: View {
     let onError: (String) -> Void
 
     enum RestorePhase: Equatable {
-        case restoring(progress: (completed: UInt32, total: UInt32)? = nil)
+        case restoring
         case complete(CloudBackupRestoreReport)
         case error(String)
 
@@ -21,8 +21,38 @@ struct DeviceRestoreView: View {
         }
     }
 
-    @State private var phase: RestorePhase = .restoring()
-    private let backupManager = CloudBackupManager.shared
+    @State private var phase: RestorePhase = .restoring
+    @State private var backupManager = CloudBackupManager.shared
+    @State private var hasStartedRestore = false
+    @State private var hasCompletedFlow = false
+    @State private var timeoutTask: Task<Void, Never>?
+
+    private let restoreTimeout: Duration = .seconds(120)
+
+    private var restoreProgress: CloudBackupRestoreProgress? {
+        backupManager.restoreProgress
+    }
+
+    private var restoringSubtitle: String {
+        guard let restoreProgress else {
+            return "Preparing restore..."
+        }
+
+        switch restoreProgress.stage {
+        case .finding:
+            return "Finding wallets in your iCloud backup..."
+        case .downloading:
+            guard let total = restoreProgress.total else {
+                return "Downloading wallets..."
+            }
+            return "Downloading wallets (\(restoreProgress.completed)/\(total))"
+        case .restoring:
+            guard let total = restoreProgress.total else {
+                return "Restoring wallets..."
+            }
+            return "Restoring wallets (\(restoreProgress.completed)/\(total))"
+        }
+    }
 
     var body: some View {
         VStack(spacing: 24) {
@@ -55,11 +85,19 @@ struct DeviceRestoreView: View {
         )
         .background(Color.midnightBlue)
         .task {
-            await runRestore()
+            guard !hasStartedRestore else { return }
+            startRestore()
+        }
+        .onDisappear {
+            timeoutTask?.cancel()
+        }
+        .onChange(of: backupManager.status) { _, _ in
+            syncPhaseWithManager()
+        }
+        .onChange(of: backupManager.restoreReport) { _, _ in
+            syncPhaseWithManager()
         }
     }
-
-    // MARK: - Hero Icon
 
     @ViewBuilder
     private var heroIcon: some View {
@@ -81,7 +119,7 @@ struct DeviceRestoreView: View {
                     )
                     .frame(width: 100, height: 100)
 
-                Image(systemName: "icloud.and.arrow.down")
+                Image(systemName: restoreIconName)
                     .font(.system(size: 40))
                     .foregroundStyle(Color.btnGradientLight)
                     .symbolEffect(.pulse)
@@ -107,12 +145,23 @@ struct DeviceRestoreView: View {
         }
     }
 
-    // MARK: - Title Content
+    private var restoreIconName: String {
+        guard let restoreProgress else { return "icloud.and.arrow.down" }
+
+        switch restoreProgress.stage {
+        case .finding:
+            return "magnifyingglass"
+        case .downloading:
+            return "arrow.down.circle"
+        case .restoring:
+            return "externaldrive.badge.checkmark"
+        }
+    }
 
     @ViewBuilder
     private var titleContent: some View {
         switch phase {
-        case let .restoring(progress):
+        case .restoring:
             VStack(spacing: 12) {
                 HStack {
                     Text("Restoring from Cloud")
@@ -122,15 +171,10 @@ struct DeviceRestoreView: View {
                 }
 
                 HStack {
-                    if let progress {
-                        Text("Restoring wallets (\(progress.completed)/\(progress.total))")
-                            .font(.footnote)
-                            .foregroundStyle(.coveLightGray.opacity(0.75))
-                    } else {
-                        Text("Restoring wallets...")
-                            .font(.footnote)
-                            .foregroundStyle(.coveLightGray.opacity(0.75))
-                    }
+                    Text(restoringSubtitle)
+                        .font(.footnote)
+                        .foregroundStyle(.coveLightGray.opacity(0.75))
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer()
                 }
             }
@@ -180,19 +224,17 @@ struct DeviceRestoreView: View {
         }
     }
 
-    // MARK: - Bottom Content
-
     @ViewBuilder
     private var bottomContent: some View {
         switch phase {
-        case let .restoring(progress):
-            if let progress {
+        case .restoring:
+            if let restoreProgress, let total = restoreProgress.total {
                 ProgressView(
-                    value: Double(progress.completed),
-                    total: Double(max(progress.total, 1))
+                    value: Double(restoreProgress.completed),
+                    total: Double(max(total, 1))
                 )
                 .tint(.btnGradientLight)
-                .animation(.easeInOut(duration: 0.3), value: progress.completed)
+                .animation(.easeInOut(duration: 0.3), value: restoreProgress.completed)
             } else {
                 ProgressView()
                     .tint(.white)
@@ -224,8 +266,7 @@ struct DeviceRestoreView: View {
                 )
 
                 Button {
-                    phase = .restoring()
-                    Task { await runRestore() }
+                    startRestore()
                 } label: {
                     Text("Retry")
                 }
@@ -234,70 +275,48 @@ struct DeviceRestoreView: View {
         }
     }
 
-    // MARK: - Restore Logic
+    private func startRestore() {
+        timeoutTask?.cancel()
+        phase = .restoring
+        hasStartedRestore = true
+        hasCompletedFlow = false
+        backupManager.restoreFromCloudBackup()
 
-    private func runRestore() async {
-        phase = .restoring()
-
-        // run the blocking FFI call off the main thread so progress
-        // updates dispatched to main can actually be processed
-        let rust = backupManager.rust
-        Task.detached(priority: .userInitiated) {
-            rust.restoreFromCloudBackup()
-        }
-
-        await observeRestoreCompletion()
-    }
-
-    private func observeRestoreCompletion() async {
-        let startTime = ContinuousClock.now
-
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(100))
-
-            let elapsed = ContinuousClock.now - startTime
-            if elapsed >= .seconds(120) {
-                phase = .error("Restore timed out. Please try again.")
-                return
-            }
-
-            let currentStatus = backupManager.status
-            let currentProgress = backupManager.progress
-            let report = backupManager.restoreReport
+        timeoutTask = Task {
+            try? await Task.sleep(for: restoreTimeout)
+            guard !Task.isCancelled else { return }
 
             await MainActor.run {
-                self.phase = .restoring(progress: currentProgress)
+                guard case .restoring = phase else { return }
+                phase = .error("Restore timed out. Please try again.")
+            }
+        }
+    }
+
+    private func syncPhaseWithManager() {
+        switch backupManager.status {
+        case let .error(message):
+            timeoutTask?.cancel()
+            if case .restoring = phase {
+                phase = .error(message)
+                onError(message)
             }
 
-            switch currentStatus {
-            case .enabled:
-                if let report {
-                    // show progress at 100% before transitioning
-                    if let currentProgress {
-                        phase = .restoring(progress: (currentProgress.total, currentProgress.total))
-                        try? await Task.sleep(for: .seconds(1))
-                    }
+        case .enabled:
+            guard let report = backupManager.restoreReport, !hasCompletedFlow else { return }
+            timeoutTask?.cancel()
+            hasCompletedFlow = true
+            phase = .complete(report)
 
-                    phase = .complete(report)
-                    try? await Task.sleep(for: .seconds(1))
+            Task {
+                try? await Task.sleep(for: .seconds(1))
+                await MainActor.run {
                     onComplete()
-                    return
                 }
-
-            case let .error(msg):
-                phase = .error(msg)
-                onError(msg)
-                return
-
-            case .disabled:
-                if report != nil {
-                    phase = .error("Restore failed — all wallets could not be recovered")
-                    return
-                }
-
-            default:
-                continue
             }
+
+        default:
+            break
         }
     }
 }
