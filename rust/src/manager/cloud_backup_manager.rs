@@ -10,6 +10,7 @@ use cove_cspp::CsppStore as _;
 use cove_cspp::backup_data::MASTER_KEY_RECORD_ID;
 use flume::{Receiver, Sender};
 use parking_lot::RwLock;
+use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
 use cove_device::keychain::{
@@ -30,8 +31,6 @@ use super::cloud_backup_detail_manager::{
 type LocalWalletSecret = crate::backup::model::WalletSecret;
 
 const RP_ID: &str = "covebitcoinwallet.com";
-const UPLOAD_VERIFICATION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-
 type Message = CloudBackupReconcileMessage;
 
 pub static CLOUD_BACKUP_MANAGER: LazyLock<Arc<RustCloudBackupManager>> =
@@ -61,7 +60,7 @@ pub enum CloudBackupReconcileMessage {
     PasskeyDiscoveryCancelled,
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CloudBackupRestoreReport {
     pub wallets_restored: u32,
     pub wallets_failed: u32,
@@ -241,6 +240,7 @@ pub struct RustCloudBackupManager {
     pub reconciler: Sender<Message>,
     pub reconcile_receiver: Arc<Receiver<Message>>,
     pending_upload_verifier_running: Arc<AtomicBool>,
+    pending_upload_verifier_wakeup: Arc<Notify>,
 }
 
 impl RustCloudBackupManager {
@@ -252,6 +252,7 @@ impl RustCloudBackupManager {
             reconciler: sender,
             reconcile_receiver: Arc::new(receiver),
             pending_upload_verifier_running: Arc::new(AtomicBool::new(false)),
+            pending_upload_verifier_wakeup: Arc::new(Notify::new()),
         }
         .into()
     }
