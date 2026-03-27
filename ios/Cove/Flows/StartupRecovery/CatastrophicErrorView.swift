@@ -18,107 +18,57 @@ struct CatastrophicErrorView: View {
     @State private var showWipeConfirmation = false
 
     var body: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 0) {
             Spacer()
+                .frame(height: 16)
 
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 64))
-                .foregroundStyle(.red)
+            ZStack {
+                Circle()
+                    .fill(Color.red.opacity(0.12))
+                    .frame(width: 118, height: 118)
 
-            Text("Encryption Key Error")
-                .font(.title)
-                .fontWeight(.bold)
+                Circle()
+                    .stroke(Color.red.opacity(0.18), lineWidth: 1)
+                    .frame(width: 118, height: 118)
 
-            Text(
-                "Your app's encryption key doesn't match the stored data. This is an unexpected error that shouldn't normally occur."
-            )
-            .multilineTextAlignment(.center)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 32)
-
-            cloudProbeContent
-
-            Spacer()
-
-            VStack(spacing: 16) {
-                if case .available = cloudProbeState {
-                    Button {
-                        onRestoreFromCloud()
-                    } label: {
-                        HStack {
-                            Image(systemName: "icloud.and.arrow.down")
-                            Text("Restore from Cloud Backup")
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-
-                if case .transientError = cloudProbeState {
-                    Button {
-                        onRestoreFromCloud()
-                    } label: {
-                        HStack {
-                            Image(systemName: "icloud.and.arrow.down")
-                            Text("Restore from Cloud Backup")
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Text("Network may be unstable — restore may still work")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Button {
-                        cloudProbeState = .checking
-                        probeCloud()
-                    } label: {
-                        Text("Retry Check")
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                if case .corrupt = cloudProbeState {
-                    Text("Cloud backup data may be damaged")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-
-                    Button {
-                        onRestoreFromCloud()
-                    } label: {
-                        HStack {
-                            Image(systemName: "icloud.and.arrow.down")
-                            Text("Restore from Cloud Backup")
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-
-                Button {
-                    contactSupport()
-                } label: {
-                    HStack {
-                        Image(systemName: "envelope")
-                        Text("Contact Support")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-
-                Button(role: .destructive) {
-                    showWipeConfirmation = true
-                } label: {
-                    Text("Wipe Local Data")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 42, weight: .semibold))
+                    .foregroundStyle(.red)
             }
 
             Spacer()
+                .frame(height: 40)
+
+            VStack(spacing: 16) {
+                Text("Encryption Key Error")
+                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+
+                Text(
+                    "Your app's encryption key doesn't match the stored data. This is unexpected and your local wallet data on this device can’t be opened safely."
+                )
+                .font(.system(size: 18, weight: .medium, design: .rounded))
+                .foregroundStyle(.coveLightGray.opacity(0.76))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 8)
+
+            Spacer()
+                .frame(height: 24)
+
+            cloudProbeContent
+
+            Spacer(minLength: 26)
+
+            actionButtons
         }
-        .padding()
+        .padding(.horizontal, 28)
+        .padding(.top, 12)
+        .padding(.bottom, 26)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onboardingRecoveryBackground()
         .task {
             probeCloud()
         }
@@ -138,11 +88,118 @@ struct CatastrophicErrorView: View {
     private var cloudProbeContent: some View {
         switch cloudProbeState {
         case .checking:
-            ProgressView()
-                .padding(.top, 8)
-        case .available, .unavailable, .transientError, .corrupt:
-            EmptyView()
+            VStack(spacing: 12) {
+                ProgressView()
+                    .tint(.white)
+
+                Text("Checking for an available cloud backup...")
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(.coveLightGray.opacity(0.66))
+                    .multilineTextAlignment(.center)
+            }
+
+        case .available:
+            statusCard(
+                icon: "checkmark.circle.fill",
+                color: .lightGreen,
+                text: "A cloud backup is available and can be used to restore this device"
+            )
+
+        case .unavailable:
+            statusCard(
+                icon: "icloud.slash",
+                color: .coveLightGray,
+                text: "No cloud backup was detected for this account"
+            )
+
+        case .transientError:
+            statusCard(
+                icon: "wifi.exclamationmark",
+                color: .orange,
+                text: "We couldn’t confirm cloud availability. Network conditions may be unstable, but restore may still work"
+            )
+
+        case .corrupt:
+            statusCard(
+                icon: "exclamationmark.triangle.fill",
+                color: .orange,
+                text: "Cloud backup data may be damaged, but you can still attempt a restore"
+            )
         }
+    }
+
+    private var actionButtons: some View {
+        VStack(spacing: 14) {
+            if case .available = cloudProbeState {
+                restoreButton
+            }
+
+            if case .transientError = cloudProbeState {
+                restoreButton
+
+                Button {
+                    cloudProbeState = .checking
+                    probeCloud()
+                } label: {
+                    Text("Retry Check")
+                }
+                .buttonStyle(OnboardingSecondaryButtonStyle())
+            }
+
+            if case .corrupt = cloudProbeState {
+                restoreButton
+            }
+
+            Button(action: contactSupport) {
+                Label("Contact Support", systemImage: "envelope")
+            }
+            .buttonStyle(OnboardingSecondaryButtonStyle())
+
+            Button(role: .destructive) {
+                showWipeConfirmation = true
+            } label: {
+                Text("Wipe Local Data")
+            }
+            .buttonStyle(
+                OnboardingSecondaryButtonStyle(
+                    backgroundColor: Color.red.opacity(0.12),
+                    foregroundColor: .red.opacity(0.95),
+                    borderColor: Color.red.opacity(0.22)
+                )
+            )
+        }
+    }
+
+    private var restoreButton: some View {
+        Button(action: onRestoreFromCloud) {
+            Label("Restore from Cloud Backup", systemImage: "icloud.and.arrow.down")
+        }
+        .buttonStyle(OnboardingPrimaryButtonStyle())
+    }
+
+    private func statusCard(icon: String, color: Color, text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(color)
+                .padding(.top, 2)
+
+            Text(text)
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.82))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.duskBlue.opacity(0.48))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.coveLightGray.opacity(0.14), lineWidth: 1)
+        )
     }
 
     private func probeCloud() {
