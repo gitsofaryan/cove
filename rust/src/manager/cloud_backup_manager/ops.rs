@@ -1,7 +1,7 @@
 use cove_cspp::CsppStore as _;
 use cove_cspp::master_key_crypto;
 use cove_device::cloud_storage::CloudStorage;
-use cove_device::keychain::Keychain;
+use cove_device::keychain::{CSPP_NAMESPACE_ID_KEY, Keychain};
 use cove_device::passkey::PasskeyAccess;
 use cove_util::ResultExt as _;
 use tracing::{info, warn};
@@ -9,17 +9,17 @@ use zeroize::Zeroizing;
 
 use super::cloud_inventory::CloudWalletInventory;
 use super::wallets::{
-    DownloadedWalletBackup, NamespaceMatchOutcome, all_local_wallets, discover_or_create_prf_key,
-    download_wallet_backup, obtain_prf_key, persist_enabled_cloud_backup_state,
-    persist_enabled_cloud_backup_state_reset_verification, restore_downloaded_wallet_for_restore,
-    restore_single_wallet, try_match_namespace_with_passkey, upload_all_wallets,
+    DownloadedWalletBackup, NamespaceMatchOutcome, UnpersistedPrfKey, all_local_wallets,
+    create_new_prf_key, discover_or_create_prf_key, download_wallet_backup,
+    persist_enabled_cloud_backup_state, persist_enabled_cloud_backup_state_reset_verification,
+    restore_downloaded_wallet_for_restore, restore_single_wallet, try_match_namespace_with_passkey,
+    upload_all_wallets,
 };
-use cove_device::keychain::CSPP_NAMESPACE_ID_KEY;
 
 use super::{
     CloudBackupError, CloudBackupReconcileMessage as Message, CloudBackupRestoreProgress,
     CloudBackupRestoreReport, CloudBackupRestoreStage, CloudBackupStatus, CloudBackupWalletItem,
-    CloudBackupWalletStatus, RustCloudBackupManager,
+    CloudBackupWalletStatus, PendingEnableSession, RustCloudBackupManager,
 };
 use crate::database::Database;
 use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
@@ -197,6 +197,7 @@ impl RustCloudBackupManager {
     }
 
     pub(crate) fn do_enable_cloud_backup(&self) -> Result<(), CloudBackupError> {
+        self.clear_pending_enable_session();
         self.send(Message::StatusChanged(CloudBackupStatus::Enabling));
 
         let passkey = PasskeyAccess::global();
@@ -312,6 +313,7 @@ impl RustCloudBackupManager {
     /// or via `do_enable_cloud_backup_force_new` when the user confirms creating a
     /// new backup after being warned about existing ones
     pub(crate) fn do_enable_cloud_backup_create_new(&self) -> Result<(), CloudBackupError> {
+        self.clear_pending_enable_session();
         let passkey = PasskeyAccess::global();
         let keychain = Keychain::global();
 
@@ -337,24 +339,75 @@ impl RustCloudBackupManager {
         self.enable_cloud_backup_with_prf_key(keychain, &master_key, prf_key, prf_salt)
     }
 
+    pub(crate) fn do_enable_cloud_backup_force_new(&self) -> Result<(), CloudBackupError> {
+        let keychain = Keychain::global();
+
+        if let Some(pending) = self.take_pending_enable_session() {
+            let (master_key, passkey) = pending.into_parts();
+            info!("Enable: committing pending create-first cloud backup");
+            return self.enable_cloud_backup_with_passkey_material(keychain, master_key, passkey);
+        }
+
+        self.do_enable_cloud_backup_create_new()
+    }
+
     /// Same as `do_enable_cloud_backup_create_new` but skips passkey discovery,
     /// going straight to passkey registration
     pub(super) fn do_enable_cloud_backup_no_discovery(&self) -> Result<(), CloudBackupError> {
         let passkey = PasskeyAccess::global();
         let keychain = Keychain::global();
+        let cloud = CloudStorage::global();
+        self.clear_pending_enable_session();
+
+        let cspp = cove_cspp::Cspp::new(keychain.clone());
+        let has_local_master_key = cspp
+            .load_master_key_from_store()
+            .map_err_prefix("load local master key", CloudBackupError::Internal)?
+            .is_some();
+        let existing_namespaces = if has_local_master_key {
+            Vec::new()
+        } else {
+            cloud.list_namespaces().map_err(|e| {
+                CloudBackupError::Cloud(format!(
+                    "could not check for existing cloud backups, please try again when iCloud is available: {e}"
+                ))
+            })?
+        };
 
         info!("Enable (no discovery): getting master key");
-        let cspp = cove_cspp::Cspp::new(keychain.clone());
         let master_key = cspp
             .get_or_create_master_key()
             .map_err_prefix("master key", CloudBackupError::Internal)?;
 
         let namespace_id = master_key.namespace_id();
         info!("Enable (no discovery): namespace_id={namespace_id}, creating passkey");
-        let (prf_key, prf_salt) = obtain_prf_key(keychain, passkey)?;
+        let passkey = match create_new_prf_key(passkey, "Creating new passkey") {
+            Ok(result) => result,
+            Err(CloudBackupError::PasskeyDiscoveryCancelled) => {
+                self.send(Message::PasskeyDiscoveryCancelled);
+                self.send(Message::StatusChanged(CloudBackupStatus::Disabled));
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+
+        if !has_local_master_key && !existing_namespaces.is_empty() {
+            info!(
+                "Enable (no discovery): created passkey with {} existing namespace(s), waiting for confirmation",
+                existing_namespaces.len()
+            );
+            self.replace_pending_enable_session(PendingEnableSession::new(master_key, passkey));
+            self.send(Message::ExistingBackupFound);
+            self.send(Message::StatusChanged(CloudBackupStatus::Disabled));
+            return Ok(());
+        }
 
         info!("Enable (no discovery): passkey created, uploading backup");
-        self.enable_cloud_backup_with_prf_key(keychain, &master_key, prf_key, prf_salt)
+        self.enable_cloud_backup_with_passkey_material(
+            keychain,
+            Zeroizing::new(master_key),
+            Zeroizing::new(passkey),
+        )
     }
 
     pub(super) fn do_restore_from_cloud_backup(&self) -> Result<(), CloudBackupError> {
@@ -522,6 +575,55 @@ impl RustCloudBackupManager {
         keychain
             .save(CSPP_NAMESPACE_ID_KEY.into(), namespace_id.clone())
             .map_err_prefix("save namespace_id", CloudBackupError::Internal)?;
+        persist_enabled_cloud_backup_state_reset_verification(
+            &db,
+            uploaded_wallet_record_ids.len() as u32,
+        )?;
+        self.enqueue_pending_uploads(
+            &namespace_id,
+            std::iter::once(super::cspp_master_key_record_id()).chain(uploaded_wallet_record_ids),
+        )?;
+
+        self.send(Message::EnableComplete);
+        self.send(Message::StatusChanged(CloudBackupStatus::Enabled));
+        info!("Cloud backup enabled successfully");
+        Ok(())
+    }
+
+    fn enable_cloud_backup_with_passkey_material(
+        &self,
+        keychain: &Keychain,
+        master_key: Zeroizing<cove_cspp::master_key::MasterKey>,
+        passkey: Zeroizing<UnpersistedPrfKey>,
+    ) -> Result<(), CloudBackupError> {
+        let namespace_id = master_key.namespace_id();
+        let cloud = CloudStorage::global();
+
+        let encrypted_master =
+            master_key_crypto::encrypt_master_key(&master_key, &passkey.prf_key, &passkey.prf_salt)
+                .map_err_str(CloudBackupError::Crypto)?;
+        let master_json =
+            serde_json::to_vec(&encrypted_master).map_err_str(CloudBackupError::Internal)?;
+
+        info!("Enable: uploading master key");
+        cloud
+            .upload_master_key_backup(namespace_id.clone(), master_json)
+            .map_err_str(CloudBackupError::Cloud)?;
+
+        info!("Enable: uploading wallets");
+        let critical_key = Zeroizing::new(master_key.critical_data_key());
+        let db = Database::global();
+        let uploaded_wallet_record_ids =
+            upload_all_wallets(cloud, &namespace_id, &critical_key, &db)?;
+
+        info!("Enable: persisting cloud backup state");
+        keychain
+            .save_cspp_passkey_and_namespace(
+                &passkey.credential_id,
+                passkey.prf_salt,
+                &namespace_id,
+            )
+            .map_err_prefix("save cspp credentials", CloudBackupError::Internal)?;
         persist_enabled_cloud_backup_state_reset_verification(
             &db,
             uploaded_wallet_record_ids.len() as u32,

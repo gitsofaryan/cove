@@ -7088,6 +7088,8 @@ public protocol RustCloudBackupManagerProtocol: AnyObject, Sendable {
      */
     func debugResetCloudBackupState() 
     
+    func discardPendingEnableCloudBackup() 
+    
     /**
      * Enable cloud backup — idempotent, safe to retry
      *
@@ -7341,6 +7343,13 @@ open func currentStatus() -> CloudBackupStatus  {
      */
 open func debugResetCloudBackupState()  {try! rustCall() {
     uniffi_cove_fn_method_rustcloudbackupmanager_debug_reset_cloud_backup_state(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+open func discardPendingEnableCloudBackup()  {try! rustCall() {
+    uniffi_cove_fn_method_rustcloudbackupmanager_discard_pending_enable_cloud_backup(
             self.uniffiCloneHandle(),$0
     )
 }
@@ -34765,6 +34774,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_debug_reset_cloud_backup_state() != 45375) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_method_rustcloudbackupmanager_discard_pending_enable_cloud_backup() != 42772) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_rustcloudbackupmanager_enable_cloud_backup() != 63789) {

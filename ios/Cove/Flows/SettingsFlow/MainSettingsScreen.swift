@@ -42,6 +42,7 @@ struct MainSettingsScreen: View {
     // private
     @State private var sheetState: TaggedItem<SheetState>? = nil
     @State private var alertState: TaggedItem<AlertState>? = nil
+    @State private var didConfirmExistingBackupWarning = false
 
     // settings toggles for when you are in decoy mode
     @State private var isPinEnabled: Bool = true
@@ -366,11 +367,21 @@ struct MainSettingsScreen: View {
                 isPresented: $manager.showExistingBackupWarning
             ) {
                 Button("Create New Backup", role: .destructive) {
+                    didConfirmExistingBackupWarning = true
                     manager.enableCloudBackupForceNew()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Creating a new backup will not include wallets from the previous one.")
+            }
+            .onChange(of: manager.showExistingBackupWarning) { oldValue, newValue in
+                guard oldValue, !newValue else { return }
+
+                if !didConfirmExistingBackupWarning {
+                    manager.discardPendingEnableCloudBackup()
+                }
+
+                didConfirmExistingBackupWarning = false
             }
             .alert(
                 "Passkey Options",
@@ -864,7 +875,7 @@ struct MainSettingsScreen: View {
             CloudBackupEnableOnboardingView(
                 onEnable: {
                     sheetState = .none
-                    CloudBackupManager.shared.enableCloudBackup()
+                    CloudBackupManager.shared.enableCloudBackupNoDiscovery()
                 },
                 onCancel: { sheetState = .none }
             )

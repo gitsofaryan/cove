@@ -9,9 +9,10 @@ use std::sync::{Arc, LazyLock, atomic::AtomicBool};
 use cove_cspp::CsppStore as _;
 use cove_cspp::backup_data::MASTER_KEY_RECORD_ID;
 use flume::{Receiver, Sender};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
+use zeroize::Zeroizing;
 
 use cove_device::keychain::{
     CSPP_CREDENTIAL_ID_KEY, CSPP_NAMESPACE_ID_KEY, CSPP_PRF_SALT_KEY, Keychain,
@@ -23,7 +24,7 @@ use crate::database::Database;
 use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
 use crate::wallet::metadata::{WalletMode as LocalWalletMode, WalletType};
 
-use self::wallets::{all_local_wallets, count_all_wallets};
+use self::wallets::{UnpersistedPrfKey, all_local_wallets, count_all_wallets};
 use super::cloud_backup_detail_manager::{
     CloudOnlyOperation, CloudOnlyState, RecoveryState, SyncState, VerificationState,
 };
@@ -210,6 +211,29 @@ impl Default for CloudBackupState {
     }
 }
 
+pub(crate) struct PendingEnableSession {
+    master_key: Zeroizing<cove_cspp::master_key::MasterKey>,
+    passkey: Zeroizing<UnpersistedPrfKey>,
+}
+
+impl std::fmt::Debug for PendingEnableSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingEnableSession").finish_non_exhaustive()
+    }
+}
+
+impl PendingEnableSession {
+    fn new(master_key: cove_cspp::master_key::MasterKey, passkey: UnpersistedPrfKey) -> Self {
+        Self { master_key: Zeroizing::new(master_key), passkey: Zeroizing::new(passkey) }
+    }
+
+    fn into_parts(
+        self,
+    ) -> (Zeroizing<cove_cspp::master_key::MasterKey>, Zeroizing<UnpersistedPrfKey>) {
+        (self.master_key, self.passkey)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CloudBackupError {
     #[error("not supported: {0}")]
@@ -244,6 +268,7 @@ pub struct RustCloudBackupManager {
     pub state: Arc<RwLock<CloudBackupState>>,
     pub reconciler: Sender<Message>,
     pub reconcile_receiver: Arc<Receiver<Message>>,
+    pending_enable_session: Arc<Mutex<Option<PendingEnableSession>>>,
     pending_upload_verifier_running: Arc<AtomicBool>,
     pending_upload_verifier_wakeup: Arc<Notify>,
 }
@@ -273,6 +298,7 @@ impl RustCloudBackupManager {
             state: Arc::new(RwLock::new(CloudBackupState::default())),
             reconciler: sender,
             reconcile_receiver: Arc::new(receiver),
+            pending_enable_session: Arc::new(Mutex::new(None)),
             pending_upload_verifier_running: Arc::new(AtomicBool::new(false)),
             pending_upload_verifier_wakeup: Arc::new(Notify::new()),
         }
@@ -385,6 +411,18 @@ impl RustCloudBackupManager {
         keychain
             .get(CSPP_NAMESPACE_ID_KEY.into())
             .ok_or_else(|| CloudBackupError::Internal("namespace_id not found in keychain".into()))
+    }
+
+    pub(crate) fn replace_pending_enable_session(&self, session: PendingEnableSession) {
+        *self.pending_enable_session.lock() = Some(session);
+    }
+
+    pub(crate) fn take_pending_enable_session(&self) -> Option<PendingEnableSession> {
+        self.pending_enable_session.lock().take()
+    }
+
+    pub(crate) fn clear_pending_enable_session(&self) {
+        self.pending_enable_session.lock().take();
     }
 
     fn start_background_operation<F>(
@@ -517,6 +555,7 @@ impl RustCloudBackupManager {
         keychain.delete(CSPP_NAMESPACE_ID_KEY.to_string());
         keychain.delete(CSPP_CREDENTIAL_ID_KEY.to_string());
         keychain.delete(CSPP_PRF_SALT_KEY.to_string());
+        self.clear_pending_enable_session();
 
         // also delete the master key so next enable starts clean
         let cspp = cove_cspp::Cspp::new(keychain.clone());
@@ -560,7 +599,7 @@ impl RustCloudBackupManager {
         CLOUD_BACKUP_MANAGER.clone().start_background_operation(
             "enable_cloud_backup_force_new",
             Some(CloudBackupStatus::Enabling),
-            |this| this.do_enable_cloud_backup_create_new(),
+            |this| this.do_enable_cloud_backup_force_new(),
         );
     }
 
@@ -574,6 +613,10 @@ impl RustCloudBackupManager {
             Some(CloudBackupStatus::Enabling),
             |this| this.do_enable_cloud_backup_no_discovery(),
         );
+    }
+
+    pub fn discard_pending_enable_cloud_backup(&self) {
+        self.clear_pending_enable_session();
     }
 
     /// Restore from cloud backup — called after device restore

@@ -119,6 +119,10 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
         rustBridge.async { self.rust.enableCloudBackupNoDiscovery() }
     }
 
+    func discardPendingEnableCloudBackup() {
+        rustBridge.async { self.rust.discardPendingEnableCloudBackup() }
+    }
+
     func startVerification() {
         rustBridge.async { self.rust.startVerification() }
     }

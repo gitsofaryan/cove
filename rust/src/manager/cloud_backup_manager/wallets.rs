@@ -15,7 +15,7 @@ use cove_util::ResultExt as _;
 use rand::RngExt as _;
 use strum::IntoEnumIterator as _;
 use tracing::{info, warn};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use cove_device::keychain::{CSPP_CREDENTIAL_ID_KEY, CSPP_PRF_SALT_KEY};
 
@@ -27,6 +27,7 @@ use crate::database::Database;
 use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
 use crate::wallet::metadata::{WalletMetadata, WalletType};
 
+#[derive(Zeroize)]
 pub(super) struct UnpersistedPrfKey {
     pub(super) prf_key: [u8; 32],
     pub(super) prf_salt: [u8; 32],
@@ -413,27 +414,6 @@ pub(super) fn restore_downloaded_wallet_for_restore(
     Ok(())
 }
 
-/// Create a fresh passkey and authenticate with PRF to get the wrapping key
-///
-/// Always creates a new passkey — the enable flow re-encrypts everything,
-/// so there's no benefit to reusing stale cached credentials (which may
-/// reference a passkey deleted from the user's password manager)
-pub(super) fn obtain_prf_key(
-    keychain: &Keychain,
-    passkey: &PasskeyAccess,
-) -> Result<([u8; 32], [u8; 32]), CloudBackupError> {
-    keychain.delete(CSPP_CREDENTIAL_ID_KEY.to_string());
-    keychain.delete(CSPP_PRF_SALT_KEY.to_string());
-
-    let unpersisted = create_new_prf_key(passkey, "Creating new passkey")?;
-
-    keychain
-        .save_cspp_passkey(&unpersisted.credential_id, unpersisted.prf_salt)
-        .map_err_prefix("save cspp credentials", CloudBackupError::Internal)?;
-
-    Ok((unpersisted.prf_key, unpersisted.prf_salt))
-}
-
 /// Try to discover an existing passkey, fall back to creating a new one
 ///
 /// Shows the full passkey picker (including 1Password). If the user picks
@@ -482,7 +462,7 @@ pub(super) fn download_wallet_backup(
     Ok(DownloadedWalletBackup { metadata, entry })
 }
 
-fn create_new_prf_key(
+pub(super) fn create_new_prf_key(
     passkey: &PasskeyAccess,
     log_message: &str,
 ) -> Result<UnpersistedPrfKey, CloudBackupError> {
@@ -494,7 +474,7 @@ fn create_new_prf_key(
             rand::rng().random::<[u8; 16]>().to_vec(),
             random_challenge(),
         )
-        .map_err_str(CloudBackupError::Passkey)?;
+        .map_err(map_enable_passkey_error)?;
 
     let prf_output = passkey
         .authenticate_with_prf(
@@ -503,7 +483,7 @@ fn create_new_prf_key(
             prf_salt.to_vec(),
             random_challenge(),
         )
-        .map_err_str(CloudBackupError::Passkey)?;
+        .map_err(map_enable_passkey_error)?;
 
     Ok(UnpersistedPrfKey { prf_key: prf_output_to_key(prf_output)?, prf_salt, credential_id })
 }
@@ -537,6 +517,16 @@ fn map_wrapper_repair_passkey_error(error: PasskeyError) -> CloudBackupError {
     match error {
         PasskeyError::UserCancelled => {
             info!("User cancelled new passkey flow for wrapper repair");
+            CloudBackupError::PasskeyDiscoveryCancelled
+        }
+        other => CloudBackupError::Passkey(other.to_string()),
+    }
+}
+
+fn map_enable_passkey_error(error: PasskeyError) -> CloudBackupError {
+    match error {
+        PasskeyError::UserCancelled => {
+            info!("User cancelled new passkey flow for cloud backup enable");
             CloudBackupError::PasskeyDiscoveryCancelled
         }
         other => CloudBackupError::Passkey(other.to_string()),
