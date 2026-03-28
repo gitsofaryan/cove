@@ -31,11 +31,21 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
     }
 
     func deleteWalletBackup(namespace: String, recordId: String) throws {
-        let url = try helper.walletFileURL(namespace: namespace, recordId: recordId)
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        let url = try helper.walletFileReadURL(namespace: namespace, recordId: recordId)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try helper.coordinatedDelete(at: url, missingItemID: recordId)
+            return
+        }
+
+        let resolvedURL = try helper.metadataItemIfPresent(
+            named: url.lastPathComponent,
+            parentDirectoryURL: url.deletingLastPathComponent()
+        )?.url
+        guard let resolvedURL else {
             throw CloudStorageError.NotFound(recordId)
         }
-        try helper.coordinatedDelete(at: url)
+
+        try helper.coordinatedDelete(at: resolvedURL, missingItemID: recordId)
     }
 
     // MARK: - Discovery
@@ -46,7 +56,13 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
     }
 
     func listWalletFiles(namespace: String) throws -> [String] {
-        let nsDir = try helper.namespaceDirectoryURL(namespace: namespace)
+        let namespacesRoot = try helper.namespacesRootReadURL()
+        let namespaces = try helper.listSubdirectories(parentPath: namespacesRoot.path)
+        guard namespaces.contains(namespace) else {
+            throw CloudStorageError.NotFound(namespace)
+        }
+
+        let nsDir = try helper.namespaceDirectoryReadURL(namespace: namespace)
         return try helper.listFiles(namespacePath: nsDir.path, prefix: "wallet-")
     }
 

@@ -105,6 +105,10 @@ final class ICloudDriveHelper: @unchecked Sendable {
         return url
     }
 
+    func dataDirectoryReadURL() throws -> URL {
+        try containerURL().appendingPathComponent(dataSubdirectory, isDirectory: true)
+    }
+
     /// Root directory for all namespaces: Data/cspp-namespaces/
     func namespacesRootURL() throws -> URL {
         let url = try dataDirectoryURL()
@@ -113,12 +117,22 @@ final class ICloudDriveHelper: @unchecked Sendable {
         return url
     }
 
+    func namespacesRootReadURL() throws -> URL {
+        try dataDirectoryReadURL()
+            .appendingPathComponent(namespacesSubdirectory, isDirectory: true)
+    }
+
     /// Directory for a specific namespace: Data/cspp-namespaces/{namespace}/
     func namespaceDirectoryURL(namespace: String) throws -> URL {
         let url = try namespacesRootURL()
             .appendingPathComponent(namespace, isDirectory: true)
         try coordinatedCreateDirectory(at: url)
         return url
+    }
+
+    func namespaceDirectoryReadURL(namespace: String) throws -> URL {
+        try namespacesRootReadURL()
+            .appendingPathComponent(namespace, isDirectory: true)
     }
 
     /// Master key file URL within a namespace
@@ -139,6 +153,12 @@ final class ICloudDriveHelper: @unchecked Sendable {
     func walletFileURL(namespace: String, recordId: String) throws -> URL {
         let filename = "wallet-\(recordId).json"
         return try namespaceDirectoryURL(namespace: namespace)
+            .appendingPathComponent(filename)
+    }
+
+    func walletFileReadURL(namespace: String, recordId: String) throws -> URL {
+        let filename = "wallet-\(recordId).json"
+        return try namespaceDirectoryReadURL(namespace: namespace)
             .appendingPathComponent(filename)
     }
 
@@ -259,7 +279,7 @@ final class ICloudDriveHelper: @unchecked Sendable {
         }
     }
 
-    func coordinatedDelete(at url: URL) throws {
+    func coordinatedDelete(at url: URL, missingItemID: String) throws {
         var coordinatorError: NSError?
         var deleteError: Error?
 
@@ -275,6 +295,9 @@ final class ICloudDriveHelper: @unchecked Sendable {
         }
 
         if let error = coordinatorError ?? deleteError {
+            if Self.isNoSuchFileError(error) {
+                throw CloudStorageError.NotFound(missingItemID)
+            }
             throw CloudStorageError.UploadFailed("delete failed: \(error.localizedDescription)")
         }
     }
@@ -729,6 +752,13 @@ final class ICloudDriveHelper: @unchecked Sendable {
         } else {
             false
         }
+    }
+
+    private static func isNoSuchFileError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == NSCocoaErrorDomain else { return false }
+        return nsError.code == NSFileNoSuchFileError || nsError.code == NSFileReadNoSuchFileError
+            || nsError.code == 4
     }
 
     /// Checks sync health of all files in namespace directories

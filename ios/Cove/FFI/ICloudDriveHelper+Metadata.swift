@@ -463,6 +463,34 @@ extension ICloudDriveHelper {
         return result.value
     }
 
+    func metadataItemIfPresent(
+        named name: String,
+        parentDirectoryURL: URL
+    ) throws -> ResolvedMetadataItem? {
+        let resolvedParent = Self.resolvedPath(parentDirectoryURL.path)
+        let predicate = NSPredicate(format: "%K == %@", NSMetadataItemFSNameKey, name)
+        let items = try metadataQuery(
+            predicate: predicate,
+            searchScopes: [NSMetadataQueryUbiquitousDataScope],
+            timeout: 5
+        )
+
+        for item in items {
+            guard
+                let match = Self.resolvedMetadataItem(
+                    from: item,
+                    named: name,
+                    under: resolvedParent
+                )
+            else {
+                continue
+            }
+            return match
+        }
+
+        return nil
+    }
+
     private func metadataNames(
         parentDirectoryURL: URL,
         transform: (String) -> String?
@@ -503,5 +531,26 @@ extension ICloudDriveHelper {
             guard name.hasPrefix(prefix) else { return nil }
             return name
         }
+    }
+
+    private static func resolvedMetadataItem(
+        from item: NSMetadataItem,
+        named name: String,
+        under resolvedParent: String
+    ) -> ResolvedMetadataItem? {
+        let prefix = resolvedParent + "/"
+        guard let itemName = item.value(forAttribute: NSMetadataItemFSNameKey) as? String else {
+            return nil
+        }
+        guard itemName == name else { return nil }
+        guard let metadataURL = item.value(forAttribute: NSMetadataItemURLKey) as? URL else {
+            return nil
+        }
+        let metadataPath = Self.metadataPath(for: item)
+        guard let metadataPath, metadataPath.hasPrefix(prefix) else {
+            return nil
+        }
+
+        return ResolvedMetadataItem(url: metadataURL, metadataPath: metadataPath)
     }
 }

@@ -269,12 +269,12 @@ extension CoveApp {
     /// Background check that cloud backup files and keychain master key are intact
     private func startBackupIntegrityCheck() {
         Task {
+            CloudBackupManager.shared.rust.resumePendingCloudUploadVerification()
+
             let isICloudAvailable = await MainActor.run {
                 FileManager.default.ubiquityIdentityToken != nil
             }
             guard isICloudAvailable else { return }
-
-            CloudBackupManager.shared.rust.resumePendingCloudUploadVerification()
 
             let warning = await Task.detached {
                 CloudBackupManager.shared.rust.verifyBackupIntegrity()
