@@ -62,7 +62,7 @@ struct CloudBackupEnableOnboardingView: View {
                         }
 
                         HStack {
-                            Text("Cloud Backup encrypts your wallet data and stores it in iCloud, secured by a passkey that only you control.")
+                            Text("Cloud Backup is end-to-end encrypted before it leaves your device and stored in iCloud, secured by a passkey that only you control.")
                                 .font(.footnote)
                                 .foregroundStyle(.coveLightGray.opacity(0.75))
                                 .fixedSize(horizontal: false, vertical: true)
@@ -96,7 +96,7 @@ struct CloudBackupEnableOnboardingView: View {
                             Spacer()
                         }
 
-                        Text("Your wallet backup is encrypted and stored in iCloud Drive. A passkey stored in iCloud Keychain is required to decrypt it. Both are needed to restore your wallets.")
+                        Text("Your wallet backup is end-to-end encrypted before upload and stored in iCloud Drive. Only your passkey can decrypt it, so both are needed to restore your wallets.")
                             .font(.caption)
                             .foregroundStyle(.coveLightGray.opacity(0.60))
                             .fixedSize(horizontal: false, vertical: true)
