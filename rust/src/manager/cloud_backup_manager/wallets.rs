@@ -1,6 +1,5 @@
 use std::str::FromStr as _;
 
-use cove_cspp::CsppStore as _;
 use cove_cspp::backup_data::{
     DescriptorPair, EncryptedWalletBackup, WalletEntry, WalletMode,
     WalletSecret as CloudWalletSecret, wallet_record_id,
@@ -16,8 +15,6 @@ use rand::RngExt as _;
 use strum::IntoEnumIterator as _;
 use tracing::{info, warn};
 use zeroize::{Zeroize, Zeroizing};
-
-use cove_device::keychain::{CSPP_CREDENTIAL_ID_KEY, CSPP_PRF_SALT_KEY};
 
 use super::{
     CloudBackupError, LocalDescriptorPair, LocalWalletMode, LocalWalletSecret, RP_ID,
@@ -412,26 +409,6 @@ pub(super) fn restore_downloaded_wallet_for_restore(
     remember_restored_wallet_fingerprint(&wallet.metadata, existing_fingerprints);
 
     Ok(())
-}
-
-/// Try to discover an existing passkey, fall back to creating a new one
-///
-/// Shows the full passkey picker (including 1Password). If the user picks
-/// an existing passkey, uses it with a fresh random salt. If the user cancels
-/// or no credentials are available, creates a new passkey via obtain_prf_key
-pub(super) fn discover_or_create_prf_key(
-    keychain: &Keychain,
-    passkey: &PasskeyAccess,
-) -> Result<([u8; 32], [u8; 32]), CloudBackupError> {
-    let unpersisted = discover_or_create_prf_key_without_persisting(passkey)?;
-
-    keychain.delete(CSPP_CREDENTIAL_ID_KEY.to_string());
-    keychain.delete(CSPP_PRF_SALT_KEY.to_string());
-    keychain
-        .save_cspp_passkey(&unpersisted.credential_id, unpersisted.prf_salt)
-        .map_err_prefix("save cspp credentials", CloudBackupError::Internal)?;
-
-    Ok((unpersisted.prf_key, unpersisted.prf_salt))
 }
 
 pub(super) fn download_wallet_backup(
