@@ -274,6 +274,9 @@ pub(crate) enum CloudBackupError {
     #[error("not supported: {0}")]
     NotSupported(String),
 
+    #[error("{0}")]
+    RecoveryRequired(String),
+
     #[error("passkey error: {0}")]
     Passkey(String),
 

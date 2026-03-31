@@ -18671,6 +18671,8 @@ public enum CloudOnlyState: Equatable, Hashable {
     case loading
     case loaded(wallets: [CloudBackupWalletItem]
     )
+    case failed(error: String
+    )
 
 
 
@@ -18699,6 +18701,9 @@ public struct FfiConverterTypeCloudOnlyState: FfiConverterRustBuffer {
         case 3: return .loaded(wallets: try FfiConverterSequenceTypeCloudBackupWalletItem.read(from: &buf)
         )
         
+        case 4: return .failed(error: try FfiConverterString.read(from: &buf)
+        )
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -18718,6 +18723,11 @@ public struct FfiConverterTypeCloudOnlyState: FfiConverterRustBuffer {
         case let .loaded(wallets):
             writeInt(&buf, Int32(3))
             FfiConverterSequenceTypeCloudBackupWalletItem.write(wallets, into: &buf)
+            
+        
+        case let .failed(error):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(error, into: &buf)
             
         }
     }

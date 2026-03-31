@@ -1,4 +1,5 @@
-use cove_device::passkey::PasskeyError;
+use cove_device::keychain::Keychain;
+use cove_device::passkey::{PasskeyAccess, PasskeyError};
 use rand::RngExt as _;
 use tracing::info;
 
@@ -20,16 +21,23 @@ pub(super) enum PasskeyAuthOutcome {
     NoCredentialFound,
 }
 
-impl VerificationSession<'_> {
-    pub(super) fn authenticate_with_fallback(
-        &self,
-        prf_salt: &[u8; 32],
-    ) -> Result<PasskeyAuthOutcome, CloudBackupError> {
-        if !self.force_discoverable
-            && let Some(ref credential_id) = load_stored_credential_id(&self.keychain)
-        {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PasskeyAuthPolicy {
+    StoredOnly,
+    StoredThenDiscover,
+    DiscoverOnly,
+}
+
+pub(super) fn authenticate_with_policy(
+    keychain: &Keychain,
+    passkey: &PasskeyAccess,
+    prf_salt: &[u8; 32],
+    policy: PasskeyAuthPolicy,
+) -> Result<PasskeyAuthOutcome, CloudBackupError> {
+    if matches!(policy, PasskeyAuthPolicy::StoredOnly | PasskeyAuthPolicy::StoredThenDiscover) {
+        if let Some(ref credential_id) = load_stored_credential_id(keychain) {
             let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
-            match self.passkey.authenticate_with_prf(
+            match passkey.authenticate_with_prf(
                 RP_ID.to_string(),
                 credential_id.clone(),
                 prf_salt.to_vec(),
@@ -50,31 +58,57 @@ impl VerificationSession<'_> {
                     return Ok(PasskeyAuthOutcome::UserCancelled);
                 }
                 Err(error) => {
-                    info!("Stored credential auth failed ({error}), trying discovery");
+                    info!("Stored credential auth failed ({error})");
+                    if matches!(policy, PasskeyAuthPolicy::StoredOnly) {
+                        return Ok(PasskeyAuthOutcome::NoCredentialFound);
+                    }
+
+                    info!("Trying discovery after stored credential auth failed");
                 }
             }
+        } else if matches!(policy, PasskeyAuthPolicy::StoredOnly) {
+            return Ok(PasskeyAuthOutcome::NoCredentialFound);
         }
+    }
 
-        let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
-        let discovered = match self.passkey.discover_and_authenticate_with_prf(
-            RP_ID.to_string(),
-            prf_salt.to_vec(),
-            challenge,
-        ) {
-            Ok(discovered) => discovered,
-            Err(error) => return map_discovery_error(error),
+    if matches!(policy, PasskeyAuthPolicy::StoredOnly) {
+        return Ok(PasskeyAuthOutcome::NoCredentialFound);
+    }
+
+    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
+    let discovered = match passkey.discover_and_authenticate_with_prf(
+        RP_ID.to_string(),
+        prf_salt.to_vec(),
+        challenge,
+    ) {
+        Ok(discovered) => discovered,
+        Err(error) => return map_discovery_error(error),
+    };
+
+    let prf_key: [u8; 32] = discovered
+        .prf_output
+        .try_into()
+        .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))?;
+
+    Ok(PasskeyAuthOutcome::Authenticated(AuthenticatedPasskey {
+        prf_key,
+        credential_id: discovered.credential_id,
+        credential_recovered: true,
+    }))
+}
+
+impl VerificationSession<'_> {
+    pub(super) fn authenticate_with_fallback(
+        &self,
+        prf_salt: &[u8; 32],
+    ) -> Result<PasskeyAuthOutcome, CloudBackupError> {
+        let policy = if self.force_discoverable {
+            PasskeyAuthPolicy::DiscoverOnly
+        } else {
+            PasskeyAuthPolicy::StoredThenDiscover
         };
 
-        let prf_key: [u8; 32] = discovered
-            .prf_output
-            .try_into()
-            .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))?;
-
-        Ok(PasskeyAuthOutcome::Authenticated(AuthenticatedPasskey {
-            prf_key,
-            credential_id: discovered.credential_id,
-            credential_recovered: true,
-        }))
+        authenticate_with_policy(&self.keychain, &self.passkey, prf_salt, policy)
     }
 }
 

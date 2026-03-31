@@ -3,12 +3,15 @@ mod session;
 mod wrapper_repair;
 
 use cove_cspp::CsppStore as _;
+use cove_cspp::master_key::MasterKey;
+use cove_cspp::master_key_crypto;
 use cove_device::cloud_storage::{CloudStorage, CloudStorageError};
 use cove_device::keychain::{CSPP_CREDENTIAL_ID_KEY, CSPP_PRF_SALT_KEY, Keychain};
 use cove_device::passkey::PasskeyAccess;
 use cove_util::ResultExt as _;
 use tracing::{error, info, warn};
 
+use self::passkey_auth::{PasskeyAuthOutcome, PasskeyAuthPolicy, authenticate_with_policy};
 use self::session::VerificationSession;
 use self::wrapper_repair::{WrapperRepairOperation, WrapperRepairStrategy};
 use super::wallets::{count_all_wallets, persist_enabled_cloud_backup_state};
@@ -253,6 +256,96 @@ impl RustCloudBackupManager {
         force_discoverable: bool,
     ) -> Result<DeepVerificationResult, CloudBackupError> {
         VerificationSession::new(self, force_discoverable)?.run()
+    }
+
+    pub(crate) fn recover_local_master_key_from_cloud(
+        &self,
+        namespace: &str,
+        recovery_message: &str,
+    ) -> Result<MasterKey, CloudBackupError> {
+        self.recover_local_master_key_from_cloud_with_policy(
+            namespace,
+            recovery_message,
+            PasskeyAuthPolicy::StoredThenDiscover,
+        )
+    }
+
+    pub(crate) fn recover_local_master_key_from_cloud_without_discovery(
+        &self,
+        namespace: &str,
+        recovery_message: &str,
+    ) -> Result<MasterKey, CloudBackupError> {
+        self.recover_local_master_key_from_cloud_with_policy(
+            namespace,
+            recovery_message,
+            PasskeyAuthPolicy::StoredOnly,
+        )
+    }
+
+    fn recover_local_master_key_from_cloud_with_policy(
+        &self,
+        namespace: &str,
+        recovery_message: &str,
+        auth_policy: PasskeyAuthPolicy,
+    ) -> Result<MasterKey, CloudBackupError> {
+        let keychain = Keychain::global();
+        let cspp = cove_cspp::Cspp::new(keychain.clone());
+        let cloud = CloudStorage::global();
+        let passkey = PasskeyAccess::global();
+
+        let master_json = match cloud.download_master_key_backup(namespace.to_string()) {
+            Ok(json) => json,
+            Err(CloudStorageError::NotFound(_)) => {
+                return Err(CloudBackupError::RecoveryRequired(recovery_message.into()));
+            }
+            Err(error) => {
+                return Err(CloudBackupError::Cloud(format!(
+                    "download master key backup: {error}",
+                )));
+            }
+        };
+
+        let encrypted: cove_cspp::backup_data::EncryptedMasterKeyBackup =
+            serde_json::from_slice(&master_json).map_err_str(CloudBackupError::Internal)?;
+        if encrypted.version != 1 {
+            let version = encrypted.version;
+            return Err(CloudBackupError::Internal(format!(
+                "master key backup version {version} is not supported",
+            )));
+        }
+
+        let authenticated =
+            match authenticate_with_policy(keychain, passkey, &encrypted.prf_salt, auth_policy)? {
+                PasskeyAuthOutcome::Authenticated(result) => result,
+                PasskeyAuthOutcome::UserCancelled => {
+                    return Err(CloudBackupError::Passkey("user cancelled".into()));
+                }
+                PasskeyAuthOutcome::NoCredentialFound => {
+                    return Err(CloudBackupError::RecoveryRequired(recovery_message.into()));
+                }
+            };
+
+        let master_key = master_key_crypto::decrypt_master_key(&encrypted, &authenticated.prf_key)
+            .map_err(|_| match auth_policy {
+                PasskeyAuthPolicy::StoredOnly => {
+                    CloudBackupError::RecoveryRequired(recovery_message.into())
+                }
+                PasskeyAuthPolicy::StoredThenDiscover | PasskeyAuthPolicy::DiscoverOnly => {
+                    CloudBackupError::Passkey(
+                        "selected passkey didn't unlock this cloud backup".into(),
+                    )
+                }
+            })?;
+
+        keychain
+            .save_cspp_passkey(&authenticated.credential_id, encrypted.prf_salt)
+            .map_err_prefix("save cspp credentials", CloudBackupError::Internal)?;
+        cspp.save_master_key(&master_key)
+            .map_err_prefix("save recovered master key", CloudBackupError::Internal)?;
+        cove_cspp::reset_master_key_cache();
+
+        info!("Recovered local master key from cloud");
+        Ok(master_key)
     }
 }
 

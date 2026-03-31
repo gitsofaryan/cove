@@ -19,6 +19,7 @@ struct DetailFormContent: View {
         case .notFetched: detail.cloudOnlyCount > 0
         case .loading: true
         case let .loaded(wallets): !wallets.isEmpty
+        case .failed: true
         }
     }
 
@@ -236,6 +237,11 @@ private struct CloudOnlySectionContent: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+
+        case let .failed(error):
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.red)
         }
     }
 }

@@ -44,6 +44,7 @@ pub enum CloudOnlyState {
     NotFetched,
     Loading,
     Loaded { wallets: Vec<CloudBackupWalletItem> },
+    Failed { error: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
@@ -262,6 +263,7 @@ impl RustCloudBackupManager {
 
     fn handle_fetch_cloud_only(&self) {
         self.set_cloud_only(CloudOnlyState::Loading);
+        self.set_cloud_only_operation(CloudOnlyOperation::Idle);
 
         match self.do_fetch_cloud_only_wallets() {
             Ok(items) => {
@@ -269,7 +271,7 @@ impl RustCloudBackupManager {
             }
             Err(error) => {
                 error!("Failed to fetch cloud-only wallets: {error}");
-                self.set_cloud_only(CloudOnlyState::Loaded { wallets: Vec::new() });
+                self.set_cloud_only(CloudOnlyState::Failed { error: error.to_string() });
             }
         }
     }
