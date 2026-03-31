@@ -146,7 +146,7 @@ pub(super) enum NamespaceMatchOutcome {
     Matched(NamespaceMatch),
     /// User cancelled the picker or biometric, or no credentials on device
     UserDeclined,
-    /// All downloaded v1 backups tried, none matched, no issues
+    /// The selected passkey didn't match any downloaded v1 backup
     NoMatch,
     /// Some namespaces couldn't be downloaded — result is inconclusive
     Inconclusive,
@@ -154,11 +154,13 @@ pub(super) enum NamespaceMatchOutcome {
     UnsupportedVersions,
 }
 
-/// Try to match a discovered passkey against cloud namespaces
+/// Try to match the selected passkey against cloud namespaces
 ///
 /// Downloads all encrypted master keys, then does a discovery auth with the first
-/// v1 backup's salt. If that doesn't match, does targeted auth against remaining
-/// namespaces with each one's own salt (one biometric per additional namespace)
+/// v1 backup's salt. If that passkey doesn't match, targeted auth reuses the same
+/// selected credential across the remaining namespaces with each namespace's own
+/// salt. Returns `NoMatch` when that selected passkey doesn't match any downloaded
+/// namespace
 pub(super) fn try_match_namespace_with_passkey(
     cloud: &CloudStorage,
     passkey: &PasskeyAccess,

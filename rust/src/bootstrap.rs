@@ -142,10 +142,12 @@ pub fn cancel_bootstrap() {
     info!("Bootstrap cancellation requested");
 }
 
-/// Reset all bootstrap state so restore can re-run bootstrap with a new key
+/// Reset bootstrap progress so recovery flows can re-run bootstrap
 ///
-/// Clears encryption key cache, bootstrap step, storage bootstrapped flag,
-/// and cancellation flag. Must be called before re-running bootstrap after restore
+/// Clears the bootstrap step, storage bootstrapped flag, cancellation flag,
+/// active migration, and cached CSPP master key. This does not rotate the
+/// local database encryption key, which is expected to remain stable across
+/// restore and re-bootstrap flows
 #[uniffi::export]
 pub fn reset_bootstrap_for_restore() {
     *BOOTSTRAP_STEP.lock() = BootstrapStep::NotStarted;

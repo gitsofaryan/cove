@@ -653,12 +653,12 @@ impl RustCloudBackupManager {
         Ok(())
     }
 
-    /// Try to restore using a local master key from keychain
-    ///
-    /// Returns `Some((master_key, namespace_id))` if a local master key exists
-    /// and the cloud namespace has wallets. Returns `None` to fall through
-    /// to passkey-based matching
     /// Restore via passkey-based namespace matching (fresh device path)
+    ///
+    /// Tries the selected passkey across all downloaded namespaces. If it
+    /// doesn't match any of them, returns `PasskeyMismatch` so the caller can
+    /// try local master key fallback or prompt the user to try a different
+    /// passkey
     fn restore_via_passkey_matching(
         &self,
         cloud: &CloudStorage,
