@@ -475,6 +475,10 @@ impl RustCloudBackupManager {
 
                 (matched.master_key, matched.namespace_id)
             }
+            Err(CloudBackupError::PasskeyDiscoveryCancelled) => {
+                info!("Restore: passkey discovery cancelled");
+                return Err(CloudBackupError::PasskeyDiscoveryCancelled);
+            }
             Err(CloudBackupError::PasskeyMismatch) => {
                 info!("Restore: passkey didn't match, trying local master key fallback");
                 self.ensure_current_restore_operation(operation_id)?;
@@ -679,9 +683,8 @@ impl RustCloudBackupManager {
                 info!("Restore: matched namespace {}", m.namespace_id);
                 Ok(m)
             }
-            NamespaceMatchOutcome::UserDeclined | NamespaceMatchOutcome::NoMatch => {
-                Err(CloudBackupError::PasskeyMismatch)
-            }
+            NamespaceMatchOutcome::UserDeclined => Err(CloudBackupError::PasskeyDiscoveryCancelled),
+            NamespaceMatchOutcome::NoMatch => Err(CloudBackupError::PasskeyMismatch),
             NamespaceMatchOutcome::Inconclusive => Err(CloudBackupError::Cloud(
                 "could not download all cloud backups, please try again when iCloud is available"
                     .into(),
@@ -1503,5 +1506,67 @@ mod tests {
         }
 
         assert_eq!(globals.cloud.uploaded_wallet_backup_count(), 1);
+    }
+
+    #[test]
+    fn discard_pending_enable_clears_pending_session_and_local_master_key() {
+        let _guard = test_lock().lock().unwrap();
+        let globals = test_globals();
+        let manager = RustCloudBackupManager::init();
+
+        reset_cloud_backup_test_state(&manager, globals);
+
+        let master_key = cove_cspp::master_key::MasterKey::generate();
+        let cspp = cove_cspp::Cspp::new(Keychain::global().clone());
+        cspp.save_master_key(&master_key).unwrap();
+        manager.replace_pending_enable_session(PendingEnableSession::new(
+            master_key,
+            UnpersistedPrfKey { prf_key: [7; 32], prf_salt: [9; 32], credential_id: vec![1, 2, 3] },
+        ));
+
+        manager.discard_pending_enable_cloud_backup();
+
+        assert!(manager.take_pending_enable_session().is_none());
+        assert!(cspp.load_master_key_from_store().unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_passkey_restore_does_not_fall_back_to_local_master_key() {
+        let _guard = test_lock().lock().unwrap();
+        cove_tokio::init();
+        let globals = test_globals();
+        let manager = RustCloudBackupManager::init();
+
+        reset_cloud_backup_test_state(&manager, globals);
+
+        let local_master_key = cove_cspp::master_key::MasterKey::generate();
+        let local_namespace_id = local_master_key.namespace_id();
+        cove_cspp::Cspp::new(Keychain::global().clone())
+            .save_master_key(&local_master_key)
+            .unwrap();
+        globals.cloud.set_wallet_files(local_namespace_id.clone(), vec!["wallet-test.json".into()]);
+
+        let remote_master_key = cove_cspp::master_key::MasterKey::generate();
+        let remote_namespace_id = remote_master_key.namespace_id();
+        let remote_prf_key = [7u8; 32];
+        let remote_prf_salt = [9u8; 32];
+        let encrypted_master = cove_cspp::master_key_crypto::encrypt_master_key(
+            &remote_master_key,
+            &remote_prf_key,
+            &remote_prf_salt,
+        )
+        .unwrap();
+        globals.cloud.set_master_key_backup(
+            remote_namespace_id.clone(),
+            serde_json::to_vec(&encrypted_master).unwrap(),
+        );
+        globals.cloud.set_wallet_files(remote_namespace_id, vec!["wallet-remote.json".into()]);
+        globals.passkey.set_discover_result(Err(PasskeyError::UserCancelled));
+
+        let operation_id = manager.next_restore_operation_id();
+        let error = manager.do_restore_from_cloud_backup(operation_id).unwrap_err();
+
+        assert!(matches!(error, CloudBackupError::PasskeyDiscoveryCancelled));
+        assert_eq!(Keychain::global().get(CSPP_NAMESPACE_ID_KEY.into()), None);
     }
 }

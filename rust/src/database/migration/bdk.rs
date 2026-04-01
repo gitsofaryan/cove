@@ -11,11 +11,14 @@ use tracing::{error, info, warn};
 use crate::bootstrap::Migration;
 use cove_common::consts::ROOT_DATA_DIR;
 
-use self::recovery::{clean_auxiliary_files, recover_interrupted_bdk_migrations_in_dir};
+use self::recovery::{
+    checkpoint_and_clean_auxiliary_files, clean_auxiliary_files, finalize_sqlite_bundle_move,
+    recover_interrupted_bdk_migrations_in_dir,
+};
 use super::MigrationFailure;
 
 #[cfg(test)]
-use self::recovery::{checkpoint_and_clean_auxiliary_files, recover_at_path, recovery_target_path};
+use self::recovery::{recover_at_path, recovery_target_path};
 
 #[derive(Debug, thiserror::Error)]
 enum BdkMigrationError {
@@ -217,12 +220,10 @@ fn migrate_single_bdk_database(path: &Path) -> Result<()> {
             .context("verification: exported database appears corrupt")?;
     }
 
+    checkpoint_and_clean_auxiliary_files(&tmp_path);
     std::fs::rename(path, &bak_path).context("failed to rename old BDK database to .bak")?;
-    std::fs::rename(&tmp_path, path)
+    finalize_sqlite_bundle_move(&tmp_path, path)
         .context("failed to rename encrypted BDK database into place")?;
-
-    // keep .bak until next launch when recovery verifies the encrypted DB works
-    clean_auxiliary_files(path);
 
     Ok(())
 }
@@ -810,6 +811,91 @@ mod tests {
         std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         assert!(result.is_err(), "recover_at_path should propagate rename errors");
+    }
+
+    #[test]
+    fn recover_backup_only_moves_auxiliary_files() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bdk_wallet_sqlite_test.db");
+        let bak_path = db_path.with_extension("db.bak");
+        let bak_wal_path = crate::bdk_store::sqlite_auxiliary_path(&bak_path, "wal");
+        let bak_shm_path = crate::bdk_store::sqlite_auxiliary_path(&bak_path, "shm");
+
+        std::fs::write(&bak_path, b"backup").unwrap();
+        std::fs::write(&bak_wal_path, b"backup wal").unwrap();
+        std::fs::write(&bak_shm_path, b"backup shm").unwrap();
+
+        recover_at_path(&db_path).unwrap();
+
+        assert_eq!(std::fs::read(&db_path).unwrap(), b"backup");
+        assert_eq!(
+            std::fs::read(crate::bdk_store::sqlite_auxiliary_path(&db_path, "wal")).unwrap(),
+            b"backup wal"
+        );
+        assert_eq!(
+            std::fs::read(crate::bdk_store::sqlite_auxiliary_path(&db_path, "shm")).unwrap(),
+            b"backup shm"
+        );
+        assert!(!bak_path.exists());
+        assert!(!bak_wal_path.exists());
+        assert!(!bak_shm_path.exists());
+    }
+
+    #[test]
+    fn finalize_sqlite_bundle_move_preserves_auxiliary_files() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bdk_wallet_sqlite_test.db");
+        let tmp_path = db_path.with_extension("db.enc.tmp");
+        let tmp_wal_path = crate::bdk_store::sqlite_auxiliary_path(&tmp_path, "wal");
+        let tmp_shm_path = crate::bdk_store::sqlite_auxiliary_path(&tmp_path, "shm");
+
+        std::fs::write(&tmp_path, b"encrypted tmp").unwrap();
+        std::fs::write(&tmp_wal_path, b"tmp wal").unwrap();
+        std::fs::write(&tmp_shm_path, b"tmp shm").unwrap();
+
+        finalize_sqlite_bundle_move(&tmp_path, &db_path).unwrap();
+
+        assert_eq!(std::fs::read(&db_path).unwrap(), b"encrypted tmp");
+        assert_eq!(
+            std::fs::read(crate::bdk_store::sqlite_auxiliary_path(&db_path, "wal")).unwrap(),
+            b"tmp wal"
+        );
+        assert_eq!(
+            std::fs::read(crate::bdk_store::sqlite_auxiliary_path(&db_path, "shm")).unwrap(),
+            b"tmp shm"
+        );
+        assert!(!tmp_path.exists());
+        assert!(!tmp_wal_path.exists());
+        assert!(!tmp_shm_path.exists());
+    }
+
+    #[test]
+    fn recover_corrupt_db_restores_backup_auxiliary_files() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bdk_wallet_sqlite_test.db");
+        let bak_path = db_path.with_extension("db.bak");
+        let bak_wal_path = crate::bdk_store::sqlite_auxiliary_path(&bak_path, "wal");
+        let bak_shm_path = crate::bdk_store::sqlite_auxiliary_path(&bak_path, "shm");
+
+        std::fs::write(&db_path, b"corrupt db").unwrap();
+        std::fs::write(&bak_path, b"backup db").unwrap();
+        std::fs::write(&bak_wal_path, b"backup wal").unwrap();
+        std::fs::write(&bak_shm_path, b"backup shm").unwrap();
+
+        recover_at_path(&db_path).unwrap();
+
+        assert_eq!(std::fs::read(&db_path).unwrap(), b"backup db");
+        assert_eq!(
+            std::fs::read(crate::bdk_store::sqlite_auxiliary_path(&db_path, "wal")).unwrap(),
+            b"backup wal"
+        );
+        assert_eq!(
+            std::fs::read(crate::bdk_store::sqlite_auxiliary_path(&db_path, "shm")).unwrap(),
+            b"backup shm"
+        );
+        assert!(!bak_path.exists());
+        assert!(!bak_wal_path.exists());
+        assert!(!bak_shm_path.exists());
     }
 
     #[test]

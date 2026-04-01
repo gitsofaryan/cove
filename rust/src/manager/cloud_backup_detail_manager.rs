@@ -184,7 +184,10 @@ impl RustCloudBackupManager {
                 }
                 self.set_verification(VerificationState::Cancelled);
             }
-            DeepVerificationResult::NotEnabled => {}
+            DeepVerificationResult::NotEnabled => {
+                self.set_verification(VerificationState::Idle);
+                self.set_recovery(RecoveryState::Idle);
+            }
             DeepVerificationResult::Failed(failure) => {
                 self.apply_failed_verification(failure);
             }

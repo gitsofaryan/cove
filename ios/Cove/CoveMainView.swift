@@ -252,7 +252,11 @@ struct CoveMainView: View {
     }
 
     private var canPresentMissingPasskeyAlert: Bool {
-        phase == .active && !showCover && app.alertState == nil && app.sheetState == nil
+        phase == .active &&
+            !showCover &&
+            app.alertState == nil &&
+            app.sheetState == nil &&
+            !app.isCloudBackupRootPromptBlocked
     }
 
     private var canPresentCloudBackupVerificationPrompt: Bool {
@@ -260,7 +264,8 @@ struct CoveMainView: View {
             !showCover &&
             app.alertState == nil &&
             app.sheetState == nil &&
-            !showMissingPasskeyAlert
+            !showMissingPasskeyAlert &&
+            !app.isCloudBackupRootPromptBlocked
     }
 
     private var isCloudBackupPasskeyMissing: Bool {

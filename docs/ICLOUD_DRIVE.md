@@ -45,7 +45,7 @@ We confirmed this by running metadata queries in the background after FileManage
 
 In dev builds, the iCloud daemon can fail to authenticate, producing these errors:
 
-```
+```text
 [ERROR] couldn't fetch remote operation IDs: NSError: Cocoa 257
 "Error returned from daemon: Error Domain=com.apple.accounts Code=7 "(null)""
 ```

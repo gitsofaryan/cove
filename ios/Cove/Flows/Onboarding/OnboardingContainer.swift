@@ -2,19 +2,23 @@ import SwiftUI
 
 @_exported import CoveCore
 
+extension WeakReconciler: OnboardingManagerReconciler where Reconciler == OnboardingManager {}
+
 @Observable
-final class OnboardingManager: OnboardingManagerReconciler, @unchecked Sendable {
+final class OnboardingManager: AnyReconciler, OnboardingManagerReconciler, @unchecked Sendable {
     let rust: RustOnboardingManager
     let app: AppManager
     var step: OnboardingStep
     var isComplete = false
     var restoreError: String?
 
+    typealias Message = OnboardingReconcileMessage
+
     init(app: AppManager) {
         self.app = app
         self.step = app.isTermsAccepted ? .cloudCheck : .terms
         self.rust = RustOnboardingManager()
-        self.rust.listenForUpdates(reconciler: self)
+        self.rust.listenForUpdates(reconciler: WeakReconciler(self))
     }
 
     func dispatch(_ action: OnboardingAction) {
@@ -33,6 +37,10 @@ final class OnboardingManager: OnboardingManagerReconciler, @unchecked Sendable 
                 self.restoreError = error
             }
         }
+    }
+
+    func reconcileMany(messages: [OnboardingReconcileMessage]) {
+        messages.forEach { reconcile(message: $0) }
     }
 }
 

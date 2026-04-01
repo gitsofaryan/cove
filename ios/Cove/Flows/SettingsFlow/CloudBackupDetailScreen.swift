@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct CloudBackupDetailScreen: View {
+    @Environment(AppManager.self) private var app
     @State private var manager = CloudBackupManager.shared
     @State private var syncHealth: ICloudDriveHelper.SyncHealth = .noFiles
     @State private var showRecreateConfirmation = false
@@ -24,6 +25,11 @@ struct CloudBackupDetailScreen: View {
         return false
     }
 
+    private var isRecovering: Bool {
+        if case .recovering = manager.recovery { return true }
+        return false
+    }
+
     private var isPasskeyMissing: Bool {
         if case .passkeyMissing = manager.status { return true }
         return false
@@ -36,6 +42,26 @@ struct CloudBackupDetailScreen: View {
 
     private var shouldShowLoadingState: Bool {
         manager.detail == nil && !isVerifying && !hasVerificationResult && !isCancelled
+    }
+
+    private func syncCloudBackupRootPromptBlockers() {
+        app.setCloudBackupRootPromptBlocker(
+            .cloudBackupDetailBusy,
+            isActive: isVerifying || isRecovering
+        )
+        app.setCloudBackupRootPromptBlocker(
+            .cloudBackupDetailDialog,
+            isActive: showRecreateConfirmation ||
+                showReinitializeConfirmation ||
+                manager.showPasskeyChoiceDialog
+        )
+    }
+
+    private func clearCloudBackupRootPromptBlockers() {
+        app.clearCloudBackupRootPromptBlockers([
+            .cloudBackupDetailBusy,
+            .cloudBackupDetailDialog,
+        ])
     }
 
     var body: some View {
@@ -55,11 +81,30 @@ struct CloudBackupDetailScreen: View {
                 manager.dispatch(action: .startVerificationDiscoverable)
             }
         }
+        .onAppear {
+            syncCloudBackupRootPromptBlockers()
+        }
+        .onDisappear {
+            clearCloudBackupRootPromptBlockers()
+        }
         .onChange(of: manager.detail) { _, _ in
             refreshSyncHealth()
         }
         .onChange(of: manager.verification) { _, _ in
             refreshSyncHealth()
+            syncCloudBackupRootPromptBlockers()
+        }
+        .onChange(of: manager.recovery) { _, _ in
+            syncCloudBackupRootPromptBlockers()
+        }
+        .onChange(of: manager.showPasskeyChoiceDialog) { _, _ in
+            syncCloudBackupRootPromptBlockers()
+        }
+        .onChange(of: showRecreateConfirmation) { _, _ in
+            syncCloudBackupRootPromptBlockers()
+        }
+        .onChange(of: showReinitializeConfirmation) { _, _ in
+            syncCloudBackupRootPromptBlockers()
         }
         .confirmationDialog(
             "Recreate Backup Index",

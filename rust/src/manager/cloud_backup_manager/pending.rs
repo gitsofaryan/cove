@@ -68,12 +68,29 @@ impl RustCloudBackupManager {
             .items
             .iter()
             .filter(|item| {
-                item.kind == CloudUploadKind::BackupBlob && item.namespace_id == namespace_id
+                item.kind == CloudUploadKind::BackupBlob
+                    && item.namespace_id == namespace_id
+                    && !item.is_confirmed()
             })
             .map(|item| item.record_id.clone())
             .collect();
 
         for record_id in record_ids {
+            if let Some(existing_item) = pending.items.iter_mut().find(|item| {
+                item.kind == CloudUploadKind::BackupBlob
+                    && item.namespace_id == namespace_id
+                    && item.record_id == record_id
+                    && item.is_confirmed()
+            }) {
+                existing_item.enqueued_at = now;
+                existing_item.verification = CloudUploadVerificationState::Pending {
+                    attempt_count: 0,
+                    last_checked_at: None,
+                };
+                known_record_ids.insert(record_id);
+                continue;
+            }
+
             if known_record_ids.insert(record_id.clone()) {
                 pending.items.push(PendingCloudUploadItem {
                     kind: CloudUploadKind::BackupBlob,
@@ -214,6 +231,7 @@ impl RustCloudBackupManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex as StdMutex, OnceLock};
 
     #[test]
     fn pending_upload_retry_backoff_resets_to_short_delay() {
@@ -235,5 +253,45 @@ mod tests {
         for _ in 0..10 {
             assert!(backoff.next_delay() <= MAX_PENDING_UPLOAD_VERIFICATION_DELAY);
         }
+    }
+
+    fn test_lock() -> &'static StdMutex<()> {
+        static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| StdMutex::new(()))
+    }
+
+    #[test]
+    fn enqueue_pending_uploads_reactivates_confirmed_item() {
+        let _guard = test_lock().lock().unwrap();
+        let manager = RustCloudBackupManager::init();
+        let table = &Database::global().cloud_upload_queue;
+
+        table.delete().unwrap();
+        manager.pending_upload_verifier_running.store(true, Ordering::SeqCst);
+
+        table
+            .set(&crate::database::cloud_backup::PendingCloudUploadQueue {
+                items: vec![PendingCloudUploadItem {
+                    kind: CloudUploadKind::BackupBlob,
+                    namespace_id: "namespace-1".into(),
+                    record_id: "record-1".into(),
+                    enqueued_at: 1,
+                    verification: CloudUploadVerificationState::Confirmed(2),
+                }],
+            })
+            .unwrap();
+
+        manager.enqueue_pending_uploads("namespace-1", ["record-1".to_string()]).unwrap();
+
+        let queue = table.get().unwrap().unwrap();
+        assert_eq!(queue.items.len(), 1);
+        assert!(matches!(
+            queue.items[0].verification,
+            CloudUploadVerificationState::Pending { attempt_count: 0, last_checked_at: None }
+        ));
+        assert!(queue.items[0].enqueued_at >= 2);
+
+        manager.pending_upload_verifier_running.store(false, Ordering::SeqCst);
+        table.delete().unwrap();
     }
 }

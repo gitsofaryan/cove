@@ -344,6 +344,7 @@ pub struct RustCloudBackupManager {
     pending_upload_verifier_running: Arc<AtomicBool>,
     pending_upload_verifier_wakeup: Arc<Notify>,
     restore_operation_id: Arc<AtomicU64>,
+    restore_operation_gate: Arc<Mutex<()>>,
 }
 
 impl RustCloudBackupManager {
@@ -385,6 +386,7 @@ impl RustCloudBackupManager {
             pending_upload_verifier_running: Arc::new(AtomicBool::new(false)),
             pending_upload_verifier_wakeup: Arc::new(Notify::new()),
             restore_operation_id: Arc::new(AtomicU64::new(0)),
+            restore_operation_gate: Arc::new(Mutex::new(())),
         }
         .into()
     }
@@ -543,10 +545,12 @@ impl RustCloudBackupManager {
     }
 
     fn next_restore_operation_id(&self) -> u64 {
+        let _gate = self.restore_operation_gate.lock();
         self.restore_operation_id.fetch_add(1, Ordering::AcqRel) + 1
     }
 
     fn invalidate_restore_operation(&self) {
+        let _gate = self.restore_operation_gate.lock();
         self.restore_operation_id.fetch_add(1, Ordering::AcqRel);
     }
 
@@ -566,9 +570,7 @@ impl RustCloudBackupManager {
         operation_id: u64,
         status: CloudBackupStatus,
     ) -> Result<(), CloudBackupError> {
-        self.ensure_current_restore_operation(operation_id)?;
-        self.set_status(status);
-        Ok(())
+        self.with_current_restore_operation(operation_id, |this| this.set_status(status))
     }
 
     pub(crate) fn set_restore_progress_for_restore_operation(
@@ -576,9 +578,9 @@ impl RustCloudBackupManager {
         operation_id: u64,
         progress: Option<CloudBackupRestoreProgress>,
     ) -> Result<(), CloudBackupError> {
-        self.ensure_current_restore_operation(operation_id)?;
-        self.set_restore_progress(progress);
-        Ok(())
+        self.with_current_restore_operation(operation_id, |this| {
+            this.set_restore_progress(progress)
+        })
     }
 
     pub(crate) fn set_restore_report_for_restore_operation(
@@ -586,9 +588,17 @@ impl RustCloudBackupManager {
         operation_id: u64,
         report: Option<CloudBackupRestoreReport>,
     ) -> Result<(), CloudBackupError> {
+        self.with_current_restore_operation(operation_id, |this| this.set_restore_report(report))
+    }
+
+    fn with_current_restore_operation<T>(
+        &self,
+        operation_id: u64,
+        update: impl FnOnce(&Self) -> T,
+    ) -> Result<T, CloudBackupError> {
+        let _gate = self.restore_operation_gate.lock();
         self.ensure_current_restore_operation(operation_id)?;
-        self.set_restore_report(report);
-        Ok(())
+        Ok(update(self))
     }
 
     pub(crate) fn persist_cloud_backup_state(
@@ -885,7 +895,9 @@ impl RustCloudBackupManager {
     }
 
     pub(crate) fn discard_pending_enable_cloud_backup(&self) {
-        self.clear_pending_enable_session();
+        if self.take_pending_enable_session().is_some() {
+            cove_cspp::Cspp::new(Keychain::global().clone()).delete_master_key();
+        }
     }
 
     pub(crate) fn cancel_restore(&self) {
@@ -1244,6 +1256,51 @@ mod tests {
             .unwrap();
 
         assert_eq!(manager.state.read().restore_progress, Some(progress));
+    }
+
+    #[test]
+    fn stale_restore_operation_cannot_update_status() {
+        let manager = RustCloudBackupManager::init();
+        let stale_operation_id = manager.next_restore_operation_id();
+        let current_operation_id = manager.next_restore_operation_id();
+
+        let error = manager
+            .set_status_for_restore_operation(stale_operation_id, CloudBackupStatus::Restoring)
+            .unwrap_err();
+
+        assert!(matches!(error, CloudBackupError::Cancelled));
+        assert_eq!(manager.state.read().status, CloudBackupStatus::Disabled);
+
+        manager
+            .set_status_for_restore_operation(current_operation_id, CloudBackupStatus::Restoring)
+            .unwrap();
+
+        assert_eq!(manager.state.read().status, CloudBackupStatus::Restoring);
+    }
+
+    #[test]
+    fn stale_restore_operation_cannot_update_restore_report() {
+        let manager = RustCloudBackupManager::init();
+        let stale_operation_id = manager.next_restore_operation_id();
+        let current_operation_id = manager.next_restore_operation_id();
+        let report = CloudBackupRestoreReport {
+            wallets_restored: 1,
+            wallets_failed: 0,
+            failed_wallet_errors: Vec::new(),
+        };
+
+        let error = manager
+            .set_restore_report_for_restore_operation(stale_operation_id, Some(report.clone()))
+            .unwrap_err();
+
+        assert!(matches!(error, CloudBackupError::Cancelled));
+        assert_eq!(manager.state.read().restore_report, None);
+
+        manager
+            .set_restore_report_for_restore_operation(current_operation_id, Some(report.clone()))
+            .unwrap();
+
+        assert_eq!(manager.state.read().restore_report, Some(report));
     }
 
     #[test]

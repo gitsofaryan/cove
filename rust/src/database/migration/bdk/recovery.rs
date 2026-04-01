@@ -49,6 +49,38 @@ pub(super) fn checkpoint_and_clean_auxiliary_files(db_path: &Path) {
     }
 }
 
+pub(super) fn rename_auxiliary_files(source_path: &Path, destination_path: &Path) -> Result<()> {
+    for suffix in ["wal", "shm"] {
+        let source_aux_path = sqlite_auxiliary_path(source_path, suffix);
+        if !source_aux_path.exists() {
+            continue;
+        }
+
+        let destination_aux_path = sqlite_auxiliary_path(destination_path, suffix);
+        super::super::log_remove_file(&destination_aux_path);
+        std::fs::rename(&source_aux_path, &destination_aux_path).context(format!(
+            "failed to rename {} to {}",
+            source_aux_path.display(),
+            destination_aux_path.display()
+        ))?;
+    }
+
+    Ok(())
+}
+
+pub(super) fn finalize_sqlite_bundle_move(
+    source_path: &Path,
+    destination_path: &Path,
+) -> Result<()> {
+    clean_auxiliary_files(destination_path);
+    std::fs::rename(source_path, destination_path).context(format!(
+        "failed to rename {} to {}",
+        source_path.display(),
+        destination_path.display()
+    ))?;
+    rename_auxiliary_files(source_path, destination_path)
+}
+
 pub(super) fn recover_interrupted_bdk_migrations_in_dir(dir: &Path) -> Result<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -108,7 +140,7 @@ pub(super) fn recover_at_path(db_path: &Path) -> Result<()> {
     if bak_path.exists() && !db_path.exists() && !tmp_path.exists() {
         let bak = bak_path.display();
         warn!("Only backup exists at {bak} -- restoring from backup");
-        std::fs::rename(&bak_path, db_path)
+        finalize_sqlite_bundle_move(&bak_path, db_path)
             .context(format!("failed to restore from backup at {bak}"))?;
         return Ok(());
     }
@@ -117,7 +149,8 @@ pub(super) fn recover_at_path(db_path: &Path) -> Result<()> {
         // crash after old→.bak, before tmp→final: finish the rename
         let path = db_path.display();
         info!("Recovering interrupted BDK migration at {path}");
-        std::fs::rename(&tmp_path, db_path)
+        checkpoint_and_clean_auxiliary_files(&tmp_path);
+        finalize_sqlite_bundle_move(&tmp_path, db_path)
             .context(format!("failed to finish interrupted BDK migration at {path}"))?;
     }
 
@@ -138,7 +171,8 @@ pub(super) fn recover_at_path(db_path: &Path) -> Result<()> {
                 warn!("Encrypted DB at {path} appears corrupt, restoring from backup");
                 super::super::log_remove_file(db_path);
                 clean_auxiliary_files(db_path);
-                std::fs::rename(&bak_path, db_path).context("failed to restore from backup")?;
+                finalize_sqlite_bundle_move(&bak_path, db_path)
+                    .context("failed to restore from backup")?;
                 // restored a plaintext backup — skip SQLCipher checkpoint
                 return Ok(());
             }

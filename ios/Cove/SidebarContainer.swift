@@ -58,6 +58,7 @@ struct SidebarContainer<Content: View>: View {
         let threshold = sideBarWidth * 0.3
         let predictedEnd = value.predictedEndTranslation.width
         let currentOffset = totalOffset
+        let startedOpen = dragStartedWithSidebarOpen
 
         // Commit the drag position before running the snapping logic so the
         // gesture translation doesn't fight animations.
@@ -65,8 +66,7 @@ struct SidebarContainer<Content: View>: View {
         dragTranslation = 0
 
         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-            // started open
-            if dragStartedWithSidebarOpen {
+            if startedOpen {
                 // started open - closing requires dragging below 70% (196px for 280px width)
                 // this means we dragged 30% towards closed
                 let closeThreshold = sideBarWidth - threshold
@@ -83,10 +83,7 @@ struct SidebarContainer<Content: View>: View {
                     // snap back to open
                     updateSidebarState(isVisible: true, animated: false)
                 }
-            }
-
-            // started closed
-            if !dragStartedWithSidebarOpen {
+            } else {
                 // started closed - opening requires dragging past 30% (84px for 280px width)
                 if offset > threshold || predictedEnd > threshold {
                     // snap to open

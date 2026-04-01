@@ -295,6 +295,7 @@ struct MainSettingsScreen: View {
                 Text("Creating a new backup will not include wallets from the previous one.")
             }
             .onChange(of: manager.showExistingBackupWarning) { oldValue, newValue in
+                syncCloudBackupRootPromptBlockers()
                 guard oldValue, !newValue else { return }
 
                 if !didConfirmExistingBackupWarning {
@@ -302,6 +303,9 @@ struct MainSettingsScreen: View {
                 }
 
                 didConfirmExistingBackupWarning = false
+            }
+            .onChange(of: manager.showPasskeyChoiceDialog) { _, _ in
+                syncCloudBackupRootPromptBlockers()
             }
             .alert(
                 "Passkey Options",
@@ -316,6 +320,9 @@ struct MainSettingsScreen: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Would you like to use an existing passkey or create a new one?")
+            }
+            .onAppear {
+                syncCloudBackupRootPromptBlockers()
             }
         }
     }
@@ -477,6 +484,25 @@ struct MainSettingsScreen: View {
         )
     }
 
+    private func syncCloudBackupRootPromptBlockers() {
+        let manager = CloudBackupManager.shared
+        app.setCloudBackupRootPromptBlocker(
+            .settingsLocalModal,
+            isActive: sheetState != nil || alertState != nil
+        )
+        app.setCloudBackupRootPromptBlocker(
+            .settingsCloudBackupDialog,
+            isActive: manager.showExistingBackupWarning || manager.showPasskeyChoiceDialog
+        )
+    }
+
+    private func clearCloudBackupRootPromptBlockers() {
+        app.clearCloudBackupRootPromptBlockers([
+            .settingsLocalModal,
+            .settingsCloudBackupDialog,
+        ])
+    }
+
     @ViewBuilder
     var BetaToggleSection: some View {
         if isBetaEnabled, !auth.isInDecoyMode() {
@@ -506,6 +532,16 @@ struct MainSettingsScreen: View {
         .onAppear {
             isBetaEnabled = Database().globalFlag().getBoolConfig(key: .betaFeaturesEnabled)
             isBetaImportExportEnabled = Database().globalFlag().getBoolConfig(key: .betaImportExportEnabled)
+            syncCloudBackupRootPromptBlockers()
+        }
+        .onDisappear {
+            clearCloudBackupRootPromptBlockers()
+        }
+        .onChange(of: sheetState) { _, _ in
+            syncCloudBackupRootPromptBlockers()
+        }
+        .onChange(of: alertState) { _, _ in
+            syncCloudBackupRootPromptBlockers()
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
@@ -923,7 +959,7 @@ struct MainSettingsScreen: View {
             CloudBackupEnableOnboardingView(
                 onEnable: {
                     sheetState = .none
-                    CloudBackupManager.shared.dispatch(action: .enableCloudBackupNoDiscovery)
+                    CloudBackupManager.shared.dispatch(action: .enableCloudBackup)
                 },
                 onCancel: { sheetState = .none }
             )

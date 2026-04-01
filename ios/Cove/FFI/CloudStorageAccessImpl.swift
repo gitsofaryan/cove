@@ -22,7 +22,7 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
 
     func downloadMasterKeyBackup(namespace: String) throws -> Data {
         let url = try helper.masterKeyFileReadURL(namespace: namespace)
-        return try helper.downloadFile(url: url, recordId: "masterkey-\(namespace)")
+        return try helper.downloadFile(url: url, recordId: csppMasterKeyRecordId())
     }
 
     func downloadWalletBackup(namespace: String, recordId: String) throws -> Data {
