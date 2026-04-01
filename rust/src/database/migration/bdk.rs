@@ -871,20 +871,29 @@ mod tests {
 
     #[test]
     fn recover_corrupt_db_restores_backup_auxiliary_files() {
+        setup_test_key();
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("bdk_wallet_sqlite_test.db");
         let bak_path = db_path.with_extension("db.bak");
         let bak_wal_path = crate::bdk_store::sqlite_auxiliary_path(&bak_path, "wal");
         let bak_shm_path = crate::bdk_store::sqlite_auxiliary_path(&bak_path, "shm");
 
-        std::fs::write(&db_path, b"corrupt db").unwrap();
-        std::fs::write(&bak_path, b"backup db").unwrap();
+        create_encrypted_db_at(&db_path);
+        create_plaintext_bdk_db_at(&bak_path);
         std::fs::write(&bak_wal_path, b"backup wal").unwrap();
         std::fs::write(&bak_shm_path, b"backup shm").unwrap();
+        let backup_bytes = std::fs::read(&bak_path).unwrap();
+
+        let mut data = std::fs::read(&db_path).unwrap();
+        let mid = data.len() / 2;
+        for byte in data[mid..mid + 64].iter_mut() {
+            *byte ^= 0xFF;
+        }
+        std::fs::write(&db_path, &data).unwrap();
 
         recover_at_path(&db_path).unwrap();
 
-        assert_eq!(std::fs::read(&db_path).unwrap(), b"backup db");
+        assert_eq!(std::fs::read(&db_path).unwrap(), backup_bytes);
         assert_eq!(
             std::fs::read(crate::bdk_store::sqlite_auxiliary_path(&db_path, "wal")).unwrap(),
             b"backup wal"
