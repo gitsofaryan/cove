@@ -3125,6 +3125,8 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_cove_fn_method_authmanagererror_uniffi_trait_display(`ptr`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_cove_fn_method_catastrophicrecoveryerror_uniffi_trait_display(`ptr`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_cove_fn_method_coincontrollistsortkey_uniffi_trait_display(`ptr`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_cove_fn_method_importwalleterror_uniffi_trait_display(`ptr`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -3500,7 +3502,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_cove_checksum_func_cspp_wallet_filename_from_record_id() != 30909.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_cove_checksum_func_reset_local_data_for_catastrophic_recovery() != 25639.toShort()) {
+    if (lib.uniffi_cove_checksum_func_reset_local_data_for_catastrophic_recovery() != 19583.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_func_send_flow_alert_state_from_address_error() != 25696.toShort()) {
@@ -32643,6 +32645,77 @@ public object FfiConverterTypeByteReaderError : FfiConverterRustBuffer<ByteReade
 
 
 
+sealed class CatastrophicRecoveryException: kotlin.Exception() {
+    
+    class Failure(
+        
+        val v1: kotlin.String
+        ) : CatastrophicRecoveryException() {
+        override val message
+            get() = "v1=${ v1 }"
+    }
+    
+
+    
+
+    // The local Rust `Display`/`Debug` implementation.
+    override fun toString(): String {
+        return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_cove_fn_method_catastrophicrecoveryerror_uniffi_trait_display(FfiConverterTypeCatastrophicRecoveryError.lower(this),
+        _status)
+}
+    )
+    }
+
+    companion object ErrorHandler : UniffiRustCallStatusErrorHandler<CatastrophicRecoveryException> {
+        override fun lift(error_buf: RustBuffer.ByValue): CatastrophicRecoveryException = FfiConverterTypeCatastrophicRecoveryError.lift(error_buf)
+    }
+
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeCatastrophicRecoveryError : FfiConverterRustBuffer<CatastrophicRecoveryException> {
+    override fun read(buf: ByteBuffer): CatastrophicRecoveryException {
+        
+
+        return when(buf.getInt()) {
+            1 -> CatastrophicRecoveryException.Failure(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: CatastrophicRecoveryException): ULong {
+        return when(value) {
+            is CatastrophicRecoveryException.Failure -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.v1)
+            )
+        }
+    }
+
+    override fun write(value: CatastrophicRecoveryException, buf: ByteBuffer) {
+        when(value) {
+            is CatastrophicRecoveryException.Failure -> {
+                buf.putInt(1)
+                FfiConverterString.write(value.v1, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+
+}
+
+
+
+
+
 sealed class CkTapException: kotlin.Exception() {
     
     class UnluckyNumber(
@@ -35446,6 +35519,15 @@ sealed class DeepVerificationResult {
         companion object
     }
     
+    data class AwaitingUploadConfirmation(
+        val v1: org.bitcoinppl.cove_core.DeepVerificationReport) : DeepVerificationResult()
+        
+    {
+        
+
+        companion object
+    }
+    
     data class PasskeyConfirmed(
         val v1: org.bitcoinppl.cove_core.CloudBackupDetail?) : DeepVerificationResult()
         
@@ -35504,17 +35586,20 @@ public object FfiConverterTypeDeepVerificationResult : FfiConverterRustBuffer<De
             1 -> DeepVerificationResult.Verified(
                 FfiConverterTypeDeepVerificationReport.read(buf),
                 )
-            2 -> DeepVerificationResult.PasskeyConfirmed(
+            2 -> DeepVerificationResult.AwaitingUploadConfirmation(
+                FfiConverterTypeDeepVerificationReport.read(buf),
+                )
+            3 -> DeepVerificationResult.PasskeyConfirmed(
                 FfiConverterOptionalTypeCloudBackupDetail.read(buf),
                 )
-            3 -> DeepVerificationResult.PasskeyMissing(
+            4 -> DeepVerificationResult.PasskeyMissing(
                 FfiConverterOptionalTypeCloudBackupDetail.read(buf),
                 )
-            4 -> DeepVerificationResult.UserCancelled(
+            5 -> DeepVerificationResult.UserCancelled(
                 FfiConverterOptionalTypeCloudBackupDetail.read(buf),
                 )
-            5 -> DeepVerificationResult.NotEnabled
-            6 -> DeepVerificationResult.Failed(
+            6 -> DeepVerificationResult.NotEnabled
+            7 -> DeepVerificationResult.Failed(
                 FfiConverterTypeDeepVerificationFailure.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -35523,6 +35608,13 @@ public object FfiConverterTypeDeepVerificationResult : FfiConverterRustBuffer<De
 
     override fun allocationSize(value: DeepVerificationResult): ULong = when(value) {
         is DeepVerificationResult.Verified -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeDeepVerificationReport.allocationSize(value.v1)
+            )
+        }
+        is DeepVerificationResult.AwaitingUploadConfirmation -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
@@ -35572,27 +35664,32 @@ public object FfiConverterTypeDeepVerificationResult : FfiConverterRustBuffer<De
                 FfiConverterTypeDeepVerificationReport.write(value.v1, buf)
                 Unit
             }
-            is DeepVerificationResult.PasskeyConfirmed -> {
+            is DeepVerificationResult.AwaitingUploadConfirmation -> {
                 buf.putInt(2)
-                FfiConverterOptionalTypeCloudBackupDetail.write(value.v1, buf)
+                FfiConverterTypeDeepVerificationReport.write(value.v1, buf)
                 Unit
             }
-            is DeepVerificationResult.PasskeyMissing -> {
+            is DeepVerificationResult.PasskeyConfirmed -> {
                 buf.putInt(3)
                 FfiConverterOptionalTypeCloudBackupDetail.write(value.v1, buf)
                 Unit
             }
-            is DeepVerificationResult.UserCancelled -> {
+            is DeepVerificationResult.PasskeyMissing -> {
                 buf.putInt(4)
                 FfiConverterOptionalTypeCloudBackupDetail.write(value.v1, buf)
                 Unit
             }
-            is DeepVerificationResult.NotEnabled -> {
+            is DeepVerificationResult.UserCancelled -> {
                 buf.putInt(5)
+                FfiConverterOptionalTypeCloudBackupDetail.write(value.v1, buf)
+                Unit
+            }
+            is DeepVerificationResult.NotEnabled -> {
+                buf.putInt(6)
                 Unit
             }
             is DeepVerificationResult.Failed -> {
-                buf.putInt(6)
+                buf.putInt(7)
                 FfiConverterTypeDeepVerificationFailure.write(value.v1, buf)
                 Unit
             }
@@ -52994,9 +53091,10 @@ object UrExceptionExternalErrorHandler : UniffiRustCallStatusErrorHandler<UrExce
          *
          * Removes wallet keychain items, deletes local databases, then reinitializes
          * the database handle so bootstrap can start from a clean state
-         */ fun `resetLocalDataForCatastrophicRecovery`()
+         */
+    @Throws(CatastrophicRecoveryException::class) fun `resetLocalDataForCatastrophicRecovery`()
         = 
-    uniffiRustCall() { _status ->
+    uniffiRustCallWithError(CatastrophicRecoveryException) { _status ->
     UniffiLib.uniffi_cove_fn_func_reset_local_data_for_catastrophic_recovery(
     
         _status)

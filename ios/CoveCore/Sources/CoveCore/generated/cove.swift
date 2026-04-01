@@ -17667,6 +17667,91 @@ public func FfiConverterTypeByteReaderError_lower(_ value: ByteReaderError) -> R
 
 
 public 
+enum CatastrophicRecoveryError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    case Failure(String
+    )
+
+    
+
+    
+// The local Rust `Display` implementation.
+public var description: String {
+    return try!  FfiConverterString.lift(
+        try! rustCall() {
+    uniffi_cove_fn_method_catastrophicrecoveryerror_uniffi_trait_display(
+            FfiConverterTypeCatastrophicRecoveryError_lower(self),$0
+    )
+}
+    )
+}
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension CatastrophicRecoveryError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCatastrophicRecoveryError: FfiConverterRustBuffer {
+    typealias SwiftType = CatastrophicRecoveryError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CatastrophicRecoveryError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .Failure(
+            try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CatastrophicRecoveryError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .Failure(v1):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(v1, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCatastrophicRecoveryError_lift(_ buf: RustBuffer) throws -> CatastrophicRecoveryError {
+    return try FfiConverterTypeCatastrophicRecoveryError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCatastrophicRecoveryError_lower(_ value: CatastrophicRecoveryError) -> RustBuffer {
+    return FfiConverterTypeCatastrophicRecoveryError.lower(value)
+}
+
+
+public 
 enum CkTapError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
@@ -19694,6 +19779,8 @@ public enum DeepVerificationResult: Equatable, Hashable {
     
     case verified(DeepVerificationReport
     )
+    case awaitingUploadConfirmation(DeepVerificationReport
+    )
     case passkeyConfirmed(CloudBackupDetail?
     )
     case passkeyMissing(CloudBackupDetail?
@@ -19727,18 +19814,21 @@ public struct FfiConverterTypeDeepVerificationResult: FfiConverterRustBuffer {
         case 1: return .verified(try FfiConverterTypeDeepVerificationReport.read(from: &buf)
         )
         
-        case 2: return .passkeyConfirmed(try FfiConverterOptionTypeCloudBackupDetail.read(from: &buf)
+        case 2: return .awaitingUploadConfirmation(try FfiConverterTypeDeepVerificationReport.read(from: &buf)
         )
         
-        case 3: return .passkeyMissing(try FfiConverterOptionTypeCloudBackupDetail.read(from: &buf)
+        case 3: return .passkeyConfirmed(try FfiConverterOptionTypeCloudBackupDetail.read(from: &buf)
         )
         
-        case 4: return .userCancelled(try FfiConverterOptionTypeCloudBackupDetail.read(from: &buf)
+        case 4: return .passkeyMissing(try FfiConverterOptionTypeCloudBackupDetail.read(from: &buf)
         )
         
-        case 5: return .notEnabled
+        case 5: return .userCancelled(try FfiConverterOptionTypeCloudBackupDetail.read(from: &buf)
+        )
         
-        case 6: return .failed(try FfiConverterTypeDeepVerificationFailure.read(from: &buf)
+        case 6: return .notEnabled
+        
+        case 7: return .failed(try FfiConverterTypeDeepVerificationFailure.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -19754,27 +19844,32 @@ public struct FfiConverterTypeDeepVerificationResult: FfiConverterRustBuffer {
             FfiConverterTypeDeepVerificationReport.write(v1, into: &buf)
             
         
-        case let .passkeyConfirmed(v1):
+        case let .awaitingUploadConfirmation(v1):
             writeInt(&buf, Int32(2))
-            FfiConverterOptionTypeCloudBackupDetail.write(v1, into: &buf)
+            FfiConverterTypeDeepVerificationReport.write(v1, into: &buf)
             
         
-        case let .passkeyMissing(v1):
+        case let .passkeyConfirmed(v1):
             writeInt(&buf, Int32(3))
             FfiConverterOptionTypeCloudBackupDetail.write(v1, into: &buf)
             
         
-        case let .userCancelled(v1):
+        case let .passkeyMissing(v1):
             writeInt(&buf, Int32(4))
             FfiConverterOptionTypeCloudBackupDetail.write(v1, into: &buf)
             
         
-        case .notEnabled:
+        case let .userCancelled(v1):
             writeInt(&buf, Int32(5))
+            FfiConverterOptionTypeCloudBackupDetail.write(v1, into: &buf)
+            
+        
+        case .notEnabled:
+            writeInt(&buf, Int32(6))
         
         
         case let .failed(v1):
-            writeInt(&buf, Int32(6))
+            writeInt(&buf, Int32(7))
             FfiConverterTypeDeepVerificationFailure.write(v1, into: &buf)
             
         }
@@ -34126,7 +34221,7 @@ public func csppWalletFilenameFromRecordId(recordId: String) -> String  {
  * Removes wallet keychain items, deletes local databases, then reinitializes
  * the database handle so bootstrap can start from a clean state
  */
-public func resetLocalDataForCatastrophicRecovery()  {try! rustCall() {
+public func resetLocalDataForCatastrophicRecovery()throws   {try rustCallWithError(FfiConverterTypeCatastrophicRecoveryError_lift) {
     uniffi_cove_fn_func_reset_local_data_for_catastrophic_recovery($0
     )
 }
@@ -34412,7 +34507,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_cove_checksum_func_cspp_wallet_filename_from_record_id() != 30909) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_cove_checksum_func_reset_local_data_for_catastrophic_recovery() != 25639) {
+    if (uniffi_cove_checksum_func_reset_local_data_for_catastrophic_recovery() != 19583) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_func_send_flow_alert_state_from_address_error() != 25696) {

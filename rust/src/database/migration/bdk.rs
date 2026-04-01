@@ -151,6 +151,25 @@ fn verify_encrypted_bdk_db(path: &Path) -> Result<bool> {
     }
 }
 
+fn checkpoint_plaintext_auxiliary_files(path: &Path) -> Result<()> {
+    if !path.exists() {
+        clean_auxiliary_files(path);
+        return Ok(());
+    }
+
+    let conn = rusqlite::Connection::open(path)
+        .context("failed to open plaintext BDK database for checkpoint")?;
+
+    match conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get::<_, i32>(0)) {
+        Ok(0) => {
+            clean_auxiliary_files(path);
+            Ok(())
+        }
+        Ok(busy) => bail!("plaintext WAL checkpoint busy={busy} at {}", path.display()),
+        Err(error) => bail!("plaintext WAL checkpoint failed at {}: {error}", path.display()),
+    }
+}
+
 /// Check if a file is a plaintext (unencrypted) SQLite database
 pub fn is_plaintext_sqlite(path: &Path) -> bool {
     let mut file = match std::fs::File::open(path) {
@@ -220,6 +239,11 @@ fn migrate_single_bdk_database(path: &Path) -> Result<()> {
             .context("verification: exported database appears corrupt")?;
     }
 
+    // bdk sqlite migration is retryable bootstrap state, so we checkpoint the
+    // plaintext database before creating `.bak` instead of preserving `.bak-wal`
+    // and `.bak-shm` through recovery
+    checkpoint_plaintext_auxiliary_files(path)
+        .context("failed to checkpoint plaintext BDK database before backup")?;
     checkpoint_and_clean_auxiliary_files(&tmp_path);
     std::fs::rename(path, &bak_path).context("failed to rename old BDK database to .bak")?;
     finalize_sqlite_bundle_move(&tmp_path, path)
@@ -311,6 +335,11 @@ mod tests {
         .unwrap();
     }
 
+    fn write_sidecars(path: &Path) {
+        std::fs::write(crate::bdk_store::sqlite_auxiliary_path(path, "wal"), b"wal").unwrap();
+        std::fs::write(crate::bdk_store::sqlite_auxiliary_path(path, "shm"), b"shm").unwrap();
+    }
+
     /// Create a real encrypted SQLCipher database at the given path
     fn create_encrypted_db_at(path: &Path) {
         setup_test_key();
@@ -374,6 +403,18 @@ mod tests {
     }
 
     #[test]
+    fn plaintext_checkpoint_cleans_auxiliary_files() {
+        let dir = TempDir::new().unwrap();
+        let db_path = create_plaintext_bdk_db(&dir, "bdk_wallet_sqlite_test.db");
+        write_sidecars(&db_path);
+
+        checkpoint_plaintext_auxiliary_files(&db_path).unwrap();
+
+        assert!(!crate::bdk_store::sqlite_auxiliary_path(&db_path, "wal").exists());
+        assert!(!crate::bdk_store::sqlite_auxiliary_path(&db_path, "shm").exists());
+    }
+
+    #[test]
     fn recover_bdk_crash_during_copy() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("bdk_wallet_sqlite_test.db");
@@ -387,6 +428,23 @@ mod tests {
         assert!(db_path.exists());
         assert!(!tmp_path.exists());
         assert_eq!(std::fs::read(&db_path).unwrap(), b"original");
+    }
+
+    #[test]
+    fn recover_bdk_crash_during_copy_removes_temp_sidecars() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bdk_wallet_sqlite_test.db");
+        let tmp_path = dir.path().join("bdk_wallet_sqlite_test.db.enc.tmp");
+
+        std::fs::write(&db_path, b"original").unwrap();
+        std::fs::write(&tmp_path, b"partial").unwrap();
+        write_sidecars(&tmp_path);
+
+        recover_at_path(&db_path).unwrap();
+
+        assert!(!tmp_path.exists());
+        assert!(!crate::bdk_store::sqlite_auxiliary_path(&tmp_path, "wal").exists());
+        assert!(!crate::bdk_store::sqlite_auxiliary_path(&tmp_path, "shm").exists());
     }
 
     #[test]

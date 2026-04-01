@@ -31,7 +31,7 @@ struct CatastrophicErrorView: View {
         .alert("Wipe All Local Data?", isPresented: $showWipeConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Wipe Data", role: .destructive) {
-                wipeAndRestart()
+                onWipeOnly()
             }
         } message: {
             Text(
@@ -74,11 +74,6 @@ struct CatastrophicErrorView: View {
         if let url = URL(string: "mailto:feedback@covebitcoinwallet.com") {
             UIApplication.shared.open(url)
         }
-    }
-
-    private func wipeAndRestart() {
-        resetLocalDataForCatastrophicRecovery()
-        onWipeOnly()
     }
 }
 

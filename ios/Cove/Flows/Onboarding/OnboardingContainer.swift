@@ -45,8 +45,13 @@ final class OnboardingManager: AnyReconciler, OnboardingManagerReconciler, @unch
 }
 
 struct OnboardingContainer: View {
-    @State var manager: OnboardingManager
+    @State private var manager: OnboardingManager
     let onComplete: () -> Void
+
+    init(manager: OnboardingManager, onComplete: @escaping () -> Void) {
+        _manager = State(initialValue: manager)
+        self.onComplete = onComplete
+    }
 
     var body: some View {
         stepView(for: manager.step)
@@ -108,9 +113,8 @@ private struct CloudCheckView: View {
     var body: some View {
         CloudCheckContent()
             .task {
-                let hasBackup = await Task.detached(priority: .userInitiated) {
-                    await Self.checkForCloudBackup { _ in }
-                }.value
+                let hasBackup = await Self.checkForCloudBackup { _ in }
+                guard !Task.isCancelled else { return }
                 onCloudCheckComplete(hasBackup)
             }
     }
@@ -123,13 +127,20 @@ private struct CloudCheckView: View {
 
         let cloud = CloudStorage(cloudStorage: CloudStorageAccessImpl())
         for attempt in 1 ... maxAttempts {
+            if Task.isCancelled { return .noBackup }
             await onAttempt(attempt)
             Log.info("[ONBOARDING] calling hasAnyCloudBackup attempt=\(attempt)/\(maxAttempts)")
             let hasBackup = (try? cloud.hasAnyCloudBackup()) == true
             Log.info("[ONBOARDING] hasAnyCloudBackup returned: \(hasBackup) attempt=\(attempt)/\(maxAttempts)")
             if hasBackup { return true }
             guard attempt < maxAttempts else { break }
-            try? await Task.sleep(for: retryDelays[attempt - 1])
+            do {
+                try await Task.sleep(for: retryDelays[attempt - 1])
+            } catch is CancellationError {
+                return false
+            } catch {
+                return false
+            }
         }
 
         return false

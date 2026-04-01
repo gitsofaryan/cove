@@ -746,6 +746,8 @@ struct CoveMainView: View {
     }
 
     private func scheduleMissingPasskeyAlert() {
+        // this blocker-based coordination is an intentional bridge until the
+        // Rust-owned cloud-backup presentation refactor in issue #619 replaces it
         guard isCloudBackupPasskeyMissing else {
             pendingMissingPasskeyAlert = false
             showMissingPasskeyAlert = false
@@ -908,6 +910,22 @@ struct CoveMainView: View {
             }
             .onChange(of: CloudBackupManager.shared.verification) { _, verification in
                 handleCloudBackupVerificationChange(verification)
+            }
+            .onChange(of: app.isCloudBackupRootPromptBlocked) { _, isBlocked in
+                if isBlocked {
+                    if isCloudBackupPasskeyMissing {
+                        pendingMissingPasskeyAlert = true
+                    }
+                    showMissingPasskeyAlert = false
+                    showCloudBackupVerificationPrompt = false
+                    return
+                }
+
+                if pendingMissingPasskeyAlert {
+                    scheduleMissingPasskeyAlert()
+                } else {
+                    scheduleCloudBackupVerificationPrompt()
+                }
             }
             .onChange(of: app.router.routes) { _, _ in
                 if isViewingCloudBackup {

@@ -156,6 +156,7 @@ pub(super) fn recover_at_path(db_path: &Path) -> Result<()> {
 
     if tmp_path.exists() {
         super::super::log_remove_file(&tmp_path);
+        clean_auxiliary_files(&tmp_path);
     }
 
     if bak_path.exists() && db_path.exists() {

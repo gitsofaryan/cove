@@ -32,6 +32,20 @@ const RECREATE_MANIFEST_RECOVERY_MESSAGE: &str =
     "Cloud backup needs verification before the backup index can be recreated";
 
 impl RustCloudBackupManager {
+    fn rollback_new_local_master_key(
+        &self,
+        cspp: &cove_cspp::Cspp<Keychain>,
+        had_local_master_key: bool,
+        context: &str,
+    ) {
+        if had_local_master_key {
+            return;
+        }
+
+        warn!("{context}: deleting new local master key");
+        cspp.delete_master_key();
+    }
+
     fn send_restore_progress(
         &self,
         operation_id: u64,
@@ -341,6 +355,10 @@ impl RustCloudBackupManager {
 
         info!("Enable: getting master key");
         let cspp = cove_cspp::Cspp::new(keychain.clone());
+        let had_local_master_key = cspp
+            .load_master_key_from_store()
+            .map_err_prefix("load local master key", CloudBackupError::Internal)?
+            .is_some();
         let master_key = cspp
             .get_or_create_master_key()
             .map_err_prefix("master key", CloudBackupError::Internal)?;
@@ -350,13 +368,25 @@ impl RustCloudBackupManager {
         let passkey = match discover_or_create_prf_key_without_persisting(passkey) {
             Ok(result) => result,
             Err(CloudBackupError::PasskeyDiscoveryCancelled) => {
+                self.rollback_new_local_master_key(
+                    &cspp,
+                    had_local_master_key,
+                    "Enable cancelled before passkey setup finished",
+                );
                 self.send(Message::PasskeyDiscoveryCancelled);
                 self.set_progress(None);
                 self.set_restore_progress(None);
                 self.set_status(CloudBackupStatus::Disabled);
                 return Ok(());
             }
-            Err(e) => return Err(e),
+            Err(error) => {
+                self.rollback_new_local_master_key(
+                    &cspp,
+                    had_local_master_key,
+                    "Enable failed before passkey setup finished",
+                );
+                return Err(error);
+            }
         };
 
         info!("Enable: passkey created, uploading backup");
@@ -412,13 +442,25 @@ impl RustCloudBackupManager {
         let passkey = match create_new_prf_key(passkey, "Creating new passkey") {
             Ok(result) => result,
             Err(CloudBackupError::PasskeyDiscoveryCancelled) => {
+                self.rollback_new_local_master_key(
+                    &cspp,
+                    has_local_master_key,
+                    "Enable (no discovery) cancelled before passkey setup finished",
+                );
                 self.send(Message::PasskeyDiscoveryCancelled);
                 self.set_progress(None);
                 self.set_restore_progress(None);
                 self.set_status(CloudBackupStatus::Disabled);
                 return Ok(());
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                self.rollback_new_local_master_key(
+                    &cspp,
+                    has_local_master_key,
+                    "Enable (no discovery) failed before passkey setup finished",
+                );
+                return Err(error);
+            }
         };
 
         if !has_local_master_key && !existing_namespaces.is_empty() {
@@ -1528,6 +1570,22 @@ mod tests {
 
         assert!(manager.take_pending_enable_session().is_none());
         assert!(cspp.load_master_key_from_store().unwrap().is_none());
+    }
+
+    #[test]
+    fn cancelled_enable_create_new_rolls_back_new_local_master_key() {
+        let _guard = test_lock().lock().unwrap();
+        let globals = test_globals();
+        let manager = RustCloudBackupManager::init();
+
+        reset_cloud_backup_test_state(&manager, globals);
+        globals.passkey.set_discover_result(Err(PasskeyError::UserCancelled));
+
+        manager.do_enable_cloud_backup_create_new().unwrap();
+
+        let cspp = cove_cspp::Cspp::new(Keychain::global().clone());
+        assert!(cspp.load_master_key_from_store().unwrap().is_none());
+        assert_eq!(manager.current_status(), CloudBackupStatus::Disabled);
     }
 
     #[tokio::test(flavor = "current_thread")]

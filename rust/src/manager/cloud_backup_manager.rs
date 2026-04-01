@@ -12,6 +12,7 @@ use std::sync::{
 
 use cove_cspp::CsppStore as _;
 use cove_cspp::backup_data::MASTER_KEY_RECORD_ID;
+use cove_util::ResultExt as _;
 use flume::{Receiver, Sender};
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::Notify;
@@ -329,6 +330,13 @@ pub(crate) enum CloudBackupError {
     Cancelled,
 }
 
+#[derive(Debug, Clone, uniffi::Error, thiserror::Error)]
+#[uniffi::export(Display)]
+pub enum CatastrophicRecoveryError {
+    #[error("{0}")]
+    Failure(String),
+}
+
 #[uniffi::export(callback_interface)]
 pub trait CloudBackupManagerReconciler: Send + Sync + std::fmt::Debug + 'static {
     fn reconcile(&self, message: CloudBackupReconcileMessage);
@@ -597,8 +605,24 @@ impl RustCloudBackupManager {
         update: impl FnOnce(&Self) -> T,
     ) -> Result<T, CloudBackupError> {
         let _gate = self.restore_operation_gate.lock();
-        self.ensure_current_restore_operation(operation_id)?;
+        if self.restore_operation_id.load(Ordering::Acquire) != operation_id {
+            return Err(CloudBackupError::Cancelled);
+        }
+
         Ok(update(self))
+    }
+
+    fn with_current_restore_operation_result<T>(
+        &self,
+        operation_id: u64,
+        update: impl FnOnce(&Self) -> Result<T, CloudBackupError>,
+    ) -> Result<T, CloudBackupError> {
+        let _gate = self.restore_operation_gate.lock();
+        if self.restore_operation_id.load(Ordering::Acquire) != operation_id {
+            return Err(CloudBackupError::Cancelled);
+        }
+
+        update(self)
     }
 
     pub(crate) fn persist_cloud_backup_state(
@@ -623,15 +647,15 @@ impl RustCloudBackupManager {
         state: &PersistedCloudBackupState,
         context: &str,
     ) -> Result<(), CloudBackupError> {
-        self.ensure_current_restore_operation(operation_id)?;
-        Database::global()
-            .cloud_backup_state
-            .set(state)
-            .map_err(|error| CloudBackupError::Internal(format!("{context}: {error}")))?;
-        self.ensure_current_restore_operation(operation_id)?;
-        self.set_status(Self::runtime_status_for(state));
-        self.refresh_persisted_flags();
-        Ok(())
+        self.with_current_restore_operation_result(operation_id, |this| {
+            Database::global()
+                .cloud_backup_state
+                .set(state)
+                .map_err(|error| CloudBackupError::Internal(format!("{context}: {error}")))?;
+            this.set_status(Self::runtime_status_for(state));
+            this.refresh_persisted_flags();
+            Ok(())
+        })
     }
 
     pub(crate) fn dismiss_verification_prompt_impl(&self) -> Result<(), CloudBackupError> {
@@ -949,15 +973,15 @@ impl RustCloudBackupManager {
 /// Removes wallet keychain items, deletes local databases, then reinitializes
 /// the database handle so bootstrap can start from a clean state
 #[uniffi::export]
-pub fn reset_local_data_for_catastrophic_recovery() {
-    wipe_local_data_for_catastrophic_recovery();
-    reinit_database_after_catastrophic_recovery();
+pub fn reset_local_data_for_catastrophic_recovery() -> Result<(), CatastrophicRecoveryError> {
+    wipe_local_data_for_catastrophic_recovery()?;
+    reinit_database_after_catastrophic_recovery()
 }
 
-fn wipe_local_data_for_catastrophic_recovery() {
+fn wipe_local_data_for_catastrophic_recovery() -> Result<(), CatastrophicRecoveryError> {
     use crate::database::migration::log_remove_file;
 
-    wipe_wallet_keychain_items_for_catastrophic_recovery();
+    wipe_wallet_keychain_items_for_catastrophic_recovery()?;
 
     let root = &*cove_common::consts::ROOT_DATA_DIR;
 
@@ -979,11 +1003,14 @@ fn wipe_local_data_for_catastrophic_recovery() {
     {
         error!("Failed to remove wallet data dir: {error}");
     }
+
+    Ok(())
 }
 
-fn reinit_database_after_catastrophic_recovery() {
+fn reinit_database_after_catastrophic_recovery() -> Result<(), CatastrophicRecoveryError> {
     crate::database::wallet_data::DATABASE_CONNECTIONS.write().clear();
-    Database::reinit();
+    Database::try_reinit()
+        .map_err_prefix("reinitialize database", CatastrophicRecoveryError::Failure)
 }
 
 #[uniffi::export]
@@ -1011,16 +1038,29 @@ pub fn cspp_namespaces_subdirectory() -> String {
     cove_cspp::backup_data::NAMESPACES_SUBDIRECTORY.to_string()
 }
 
-fn wipe_wallet_keychain_items_for_catastrophic_recovery() {
+fn wipe_wallet_keychain_items_for_catastrophic_recovery() -> Result<(), CatastrophicRecoveryError> {
     let keychain = Keychain::global();
     let wallet_ids = catastrophic_wipe_wallet_ids(
         persisted_wallet_ids_for_catastrophic_wipe(),
         &cove_common::consts::WALLET_DATA_DIR,
     );
+    let mut failed_wallet_ids = Vec::new();
 
     for wallet_id in wallet_ids {
-        keychain.delete_wallet_items(&wallet_id);
+        if !keychain.delete_wallet_items(&wallet_id) {
+            failed_wallet_ids.push(wallet_id.to_string());
+        }
     }
+
+    if failed_wallet_ids.is_empty() {
+        return Ok(());
+    }
+
+    let failed_wallet_ids = failed_wallet_ids.join(", ");
+    error!("Failed to delete wallet keychain items for: {failed_wallet_ids}");
+    Err(CatastrophicRecoveryError::Failure(format!(
+        "failed to delete wallet keychain items for: {failed_wallet_ids}"
+    )))
 }
 
 fn persisted_wallet_ids_for_catastrophic_wipe() -> Option<Vec<WalletId>> {
@@ -1301,6 +1341,44 @@ mod tests {
             .unwrap();
 
         assert_eq!(manager.state.read().restore_report, Some(report));
+    }
+
+    #[test]
+    fn stale_restore_operation_cannot_persist_cloud_backup_state() {
+        let manager = RustCloudBackupManager::init();
+        let db = Database::global();
+        db.cloud_backup_state.set(&PersistedCloudBackupState::default()).unwrap();
+        manager.set_status(CloudBackupStatus::Disabled);
+
+        let stale_operation_id = manager.next_restore_operation_id();
+        let current_operation_id = manager.next_restore_operation_id();
+        let persisted_state = PersistedCloudBackupState {
+            status: PersistedCloudBackupStatus::Enabled,
+            ..PersistedCloudBackupState::default()
+        };
+
+        let error = manager
+            .persist_cloud_backup_state_for_restore_operation(
+                stale_operation_id,
+                &persisted_state,
+                "test stale restore persist",
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, CloudBackupError::Cancelled));
+        assert_eq!(db.cloud_backup_state.get().unwrap(), PersistedCloudBackupState::default());
+        assert_eq!(manager.state.read().status, CloudBackupStatus::Disabled);
+
+        manager
+            .persist_cloud_backup_state_for_restore_operation(
+                current_operation_id,
+                &persisted_state,
+                "test current restore persist",
+            )
+            .unwrap();
+
+        assert_eq!(db.cloud_backup_state.get().unwrap(), persisted_state);
+        assert_eq!(manager.state.read().status, CloudBackupStatus::Enabled);
     }
 
     #[test]

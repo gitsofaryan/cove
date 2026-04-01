@@ -104,15 +104,15 @@ impl Database {
 
     /// Re-open the database file and swap the global handle
     ///
-    /// Used after wipe+re-bootstrap to point `Database::global()` at the
-    /// freshly created DB file instead of the deleted one
-    pub fn reinit() {
+    /// Used by worst-case recovery paths that need to surface errors instead of panicking
+    pub fn try_reinit() -> Result<(), error::DatabaseError> {
         let Some(arc_swap) = DATABASE.get() else {
-            return;
+            return Ok(());
         };
 
-        let db = Self::init().expect("failed to reinitialize database");
+        let db = Self::init()?;
         arc_swap.swap(Arc::new(db));
+        Ok(())
     }
 
     fn init() -> Result<Self, error::DatabaseError> {

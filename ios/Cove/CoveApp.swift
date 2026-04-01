@@ -119,18 +119,25 @@ extension CoveApp {
         case .catastrophicError:
             CatastrophicErrorView(
                 onRestoreFromCloud: {
-                    startupState = .loading
-                    resetLocalDataForCatastrophicRecovery()
-                    rebootstrap()
+                    resetCatastrophicRecoveryStateAndRebootstrap()
                 },
                 onWipeOnly: {
-                    startupState = .loading
-                    resetLocalDataForCatastrophicRecovery()
-                    rebootstrap()
+                    resetCatastrophicRecoveryStateAndRebootstrap()
                 }
             )
         case let .fatalError(message):
             CoverView(errorMessage: message)
+        }
+    }
+
+    private func resetCatastrophicRecoveryStateAndRebootstrap() {
+        startupState = .loading
+
+        do {
+            try resetLocalDataForCatastrophicRecovery()
+            rebootstrap()
+        } catch {
+            startupState = .fatalError("Failed to reset local data: \(error.localizedDescription)")
         }
     }
 
