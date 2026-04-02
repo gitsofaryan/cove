@@ -145,6 +145,12 @@ compile-android:
 test test="" flags="":
     cargo nextest run {{test}} --workspace {{flags}}
 
+# Run tests the same way as GitHub Actions
+[group('test')]
+[working-directory: 'rust']
+test-gh test="" flags="":
+    cargo test {{test}} --workspace {{flags}}
+
 # Run tests with cargo test
 [group('test')]
 [working-directory: 'rust']
