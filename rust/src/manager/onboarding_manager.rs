@@ -202,6 +202,7 @@ struct CreatedWalletFlow {
 enum CloudBackupFlow {
     CreatedWallet(CreatedWalletFlow),
     SoftwareImport { wallet_id: WalletId },
+    HardwareImport { wallet_id: WalletId },
 }
 
 #[derive(Debug, Clone)]
@@ -758,7 +759,10 @@ impl FlowState {
                 (Self::BackupWallet(flow), TransitionCommand::None)
             }
             (
-                Self::CloudBackup(CloudBackupFlow::SoftwareImport { wallet_id }),
+                Self::CloudBackup(
+                    CloudBackupFlow::SoftwareImport { wallet_id }
+                    | CloudBackupFlow::HardwareImport { wallet_id },
+                ),
                 OnboardingAction::CloudBackupEnabled,
             ) => (
                 Self::terms(
@@ -775,7 +779,10 @@ impl FlowState {
                 OnboardingAction::SkipCloudBackup,
             ) => (Self::BackupWallet(flow), TransitionCommand::None),
             (
-                Self::CloudBackup(CloudBackupFlow::SoftwareImport { wallet_id }),
+                Self::CloudBackup(
+                    CloudBackupFlow::SoftwareImport { wallet_id }
+                    | CloudBackupFlow::HardwareImport { wallet_id },
+                ),
                 OnboardingAction::SkipCloudBackup,
             ) => (
                 Self::terms(
@@ -834,13 +841,7 @@ impl FlowState {
                 TransitionCommand::None,
             ),
             (Self::HardwareImport, OnboardingAction::HardwareImportCompleted { wallet_id }) => (
-                Self::terms(
-                    TermsContext::SelectWallet {
-                        wallet_id,
-                        post_onboarding: PostOnboardingDestination::None,
-                    },
-                    None,
-                ),
+                Self::CloudBackup(CloudBackupFlow::HardwareImport { wallet_id }),
                 TransitionCommand::None,
             ),
             (Self::StorageChoice, OnboardingAction::OpenCloudRestore) => (
@@ -1100,6 +1101,11 @@ impl FlowState {
                 state.branch = Some(OnboardingBranch::SoftwareImport);
                 state
             }
+            Self::CloudBackup(CloudBackupFlow::HardwareImport { .. }) => {
+                state.step = OnboardingStep::CloudBackup;
+                state.branch = Some(OnboardingBranch::Hardware);
+                state
+            }
             Self::SecretWords(flow) => Self::project_created_wallet(
                 OnboardingStep::SecretWords,
                 flow,
@@ -1137,9 +1143,10 @@ impl FlowState {
             | Self::SecretWords(flow)
             | Self::ExchangeFunding(flow) => Some(flow.wallet_id.clone()),
             Self::CloudBackup(CloudBackupFlow::CreatedWallet(flow)) => Some(flow.wallet_id.clone()),
-            Self::CloudBackup(CloudBackupFlow::SoftwareImport { wallet_id }) => {
-                Some(wallet_id.clone())
-            }
+            Self::CloudBackup(
+                CloudBackupFlow::SoftwareImport { wallet_id }
+                | CloudBackupFlow::HardwareImport { wallet_id },
+            ) => Some(wallet_id.clone()),
             Self::Terms { context: TermsContext::SelectWallet { wallet_id, .. }, .. } => {
                 Some(wallet_id.clone())
             }
@@ -1484,6 +1491,27 @@ mod tests {
     }
 
     #[test]
+    fn hardware_import_completion_goes_to_cloud_backup() {
+        let wallet_id = WalletId::new();
+        let mut flow = FlowState::HardwareImport;
+        let mut restore_offer_allowed = false;
+
+        let command = flow.apply_user_action(
+            OnboardingAction::HardwareImportCompleted { wallet_id: wallet_id.clone() },
+            CloudRestoreDiscovery::Checking,
+            &mut restore_offer_allowed,
+        );
+
+        assert_eq!(command, TransitionCommand::None);
+        match flow {
+            FlowState::CloudBackup(CloudBackupFlow::HardwareImport { wallet_id: id }) => {
+                assert_eq!(id, wallet_id)
+            }
+            other => panic!("unexpected flow state: {other:?}"),
+        }
+    }
+
+    #[test]
     fn enabling_cloud_backup_after_software_import_goes_to_terms() {
         let wallet_id = WalletId::new();
         let mut flow = FlowState::CloudBackup(CloudBackupFlow::SoftwareImport {
@@ -1511,6 +1539,77 @@ mod tests {
             }
             other => panic!("unexpected flow state: {other:?}"),
         }
+    }
+
+    #[test]
+    fn enabling_cloud_backup_after_hardware_import_goes_to_terms() {
+        let wallet_id = WalletId::new();
+        let mut flow = FlowState::CloudBackup(CloudBackupFlow::HardwareImport {
+            wallet_id: wallet_id.clone(),
+        });
+        let mut restore_offer_allowed = false;
+
+        let command = flow.apply_user_action(
+            OnboardingAction::CloudBackupEnabled,
+            CloudRestoreDiscovery::Checking,
+            &mut restore_offer_allowed,
+        );
+
+        assert_eq!(command, TransitionCommand::None);
+        match flow {
+            FlowState::Terms {
+                context:
+                    TermsContext::SelectWallet {
+                        wallet_id: id,
+                        post_onboarding: PostOnboardingDestination::None,
+                    },
+                ..
+            } => {
+                assert_eq!(id, wallet_id)
+            }
+            other => panic!("unexpected flow state: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skipping_cloud_backup_after_hardware_import_goes_to_terms() {
+        let wallet_id = WalletId::new();
+        let mut flow = FlowState::CloudBackup(CloudBackupFlow::HardwareImport {
+            wallet_id: wallet_id.clone(),
+        });
+        let mut restore_offer_allowed = false;
+
+        let command = flow.apply_user_action(
+            OnboardingAction::SkipCloudBackup,
+            CloudRestoreDiscovery::Checking,
+            &mut restore_offer_allowed,
+        );
+
+        assert_eq!(command, TransitionCommand::None);
+        match flow {
+            FlowState::Terms {
+                context:
+                    TermsContext::SelectWallet {
+                        wallet_id: id,
+                        post_onboarding: PostOnboardingDestination::None,
+                    },
+                ..
+            } => {
+                assert_eq!(id, wallet_id)
+            }
+            other => panic!("unexpected flow state: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hardware_import_cloud_backup_ui_state_uses_hardware_branch() {
+        let wallet_id = WalletId::new();
+        let flow = FlowState::CloudBackup(CloudBackupFlow::HardwareImport { wallet_id });
+
+        let state = flow.ui_state(CloudRestoreDiscovery::Checking, false);
+
+        assert_eq!(state.step, OnboardingStep::CloudBackup);
+        assert_eq!(state.branch, Some(OnboardingBranch::Hardware));
     }
 
     #[test]
