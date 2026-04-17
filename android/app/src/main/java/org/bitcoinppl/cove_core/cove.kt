@@ -1776,6 +1776,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_cove_checksum_method_transactiondetails_is_confirmed(
     ): Short
+    external fun uniffi_cove_checksum_method_transactiondetails_is_rbf_signaling(
+    ): Short
     external fun uniffi_cove_checksum_method_transactiondetails_is_received(
     ): Short
     external fun uniffi_cove_checksum_method_transactiondetails_is_sent(
@@ -2953,6 +2955,8 @@ internal object UniffiLib {
     external fun uniffi_cove_fn_method_transactiondetails_historical_fiat_fmt_cached(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_cove_fn_method_transactiondetails_is_confirmed(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Byte
+    external fun uniffi_cove_fn_method_transactiondetails_is_rbf_signaling(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
     external fun uniffi_cove_fn_method_transactiondetails_is_received(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
@@ -4593,6 +4597,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_method_transactiondetails_is_confirmed() != 13728.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_cove_checksum_method_transactiondetails_is_rbf_signaling() != 22881.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_method_transactiondetails_is_received() != 28034.toShort()) {
@@ -22937,6 +22944,14 @@ public interface TransactionDetailsInterface {
     
     fun `isConfirmed`(): kotlin.Boolean
     
+    /**
+     * Whether the transaction signals opt-in Replace-By-Fee (BIP 125).
+     *
+     * Returns `true` when at least one input has `nSequence < 0xFFFFFFFE`,
+     * indicating the sender opted in to fee replacement while unconfirmed.
+     */
+    fun `isRbfSignaling`(): kotlin.Boolean
+    
     fun `isReceived`(): kotlin.Boolean
     
     fun `isSent`(): kotlin.Boolean
@@ -23295,6 +23310,25 @@ open class TransactionDetails: Disposable, AutoCloseable, TransactionDetailsInte
     callWithHandle {
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_cove_fn_method_transactiondetails_is_confirmed(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Whether the transaction signals opt-in Replace-By-Fee (BIP 125).
+     *
+     * Returns `true` when at least one input has `nSequence < 0xFFFFFFFE`,
+     * indicating the sender opted in to fee replacement while unconfirmed.
+     */override fun `isRbfSignaling`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_cove_fn_method_transactiondetails_is_rbf_signaling(
         it,
         _status)
 }
@@ -39644,6 +39678,12 @@ sealed class MultiFormatException: kotlin.Exception() {
             get() = ""
     }
     
+    class PsbtNotSigned(
+        ) : MultiFormatException() {
+        override val message
+            get() = ""
+    }
+    
 
     
 
@@ -39681,6 +39721,7 @@ public object FfiConverterTypeMultiFormatError : FfiConverterRustBuffer<MultiFor
                 FfiConverterTypeTapCardParseError.read(buf),
                 )
             5 -> MultiFormatException.TaprootNotSupported()
+            6 -> MultiFormatException.PsbtNotSigned()
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -39709,6 +39750,10 @@ public object FfiConverterTypeMultiFormatError : FfiConverterRustBuffer<MultiFor
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
             )
+            is MultiFormatException.PsbtNotSigned -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
         }
     }
 
@@ -39734,6 +39779,10 @@ public object FfiConverterTypeMultiFormatError : FfiConverterRustBuffer<MultiFor
             }
             is MultiFormatException.TaprootNotSupported -> {
                 buf.putInt(5)
+                Unit
+            }
+            is MultiFormatException.PsbtNotSigned -> {
+                buf.putInt(6)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -45501,6 +45550,8 @@ sealed class SignedImportException(message: String): kotlin.Exception(message) {
         
         class UnrecognizedFormat(message: String) : SignedImportException(message)
         
+        class NotSigned(message: String) : SignedImportException(message)
+        
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<SignedImportException> {
         override fun lift(error_buf: RustBuffer.ByValue): SignedImportException = FfiConverterTypeSignedImportError.lift(error_buf)
@@ -45518,6 +45569,7 @@ public object FfiConverterTypeSignedImportError : FfiConverterRustBuffer<SignedI
             2 -> SignedImportException.Base64DecodeException(FfiConverterString.read(buf))
             3 -> SignedImportException.PsbtParseException(FfiConverterString.read(buf))
             4 -> SignedImportException.UnrecognizedFormat(FfiConverterString.read(buf))
+            5 -> SignedImportException.NotSigned(FfiConverterString.read(buf))
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
         
@@ -45543,6 +45595,10 @@ public object FfiConverterTypeSignedImportError : FfiConverterRustBuffer<SignedI
             }
             is SignedImportException.UnrecognizedFormat -> {
                 buf.putInt(4)
+                Unit
+            }
+            is SignedImportException.NotSigned -> {
+                buf.putInt(5)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
