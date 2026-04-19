@@ -315,8 +315,12 @@ impl WalletActor {
     }
 
     pub async fn transaction_lock_state(&mut self, txid: TxId) -> ActorResult<TransactionLockState> {
+<<<<<<< HEAD
         let outputs = self.wallet_unspent_outputs_for_tx(txid.0);
         Produces::ok(self.compute_lock_state(&outputs))
+=======
+        Produces::ok(self.compute_lock_state(txid.0))
+>>>>>>> df221913f2ae388b340cd7564cbc6c71783652e7
     }
 
     #[into_actor_result]
@@ -327,7 +331,11 @@ impl WalletActor {
             return Ok(());
         }
 
+<<<<<<< HEAD
         let current_state = self.compute_lock_state(&outputs);
+=======
+        let current_state = self.compute_lock_state(txid.0);
+>>>>>>> df221913f2ae388b340cd7564cbc6c71783652e7
 
         // unlocked or mixed -> lock all
         // locked -> unlock all
@@ -345,14 +353,25 @@ impl WalletActor {
         Ok(())
     }
 
+<<<<<<< HEAD
     /// Compute the aggregate lock state for the given wallet-owned unspent outputs.
     fn compute_lock_state(&self, outputs: &[OutPoint]) -> TransactionLockState {
+=======
+    /// Compute the aggregate lock state for all wallet-owned unspent outputs of a tx.
+    fn compute_lock_state(&self, txid: Txid) -> TransactionLockState {
+        let outputs = self.wallet_unspent_outputs_for_tx(txid);
+
+>>>>>>> df221913f2ae388b340cd7564cbc6c71783652e7
         if outputs.is_empty() {
             return TransactionLockState::None;
         }
 
         let mut locked_count = 0;
+<<<<<<< HEAD
         for outpoint in outputs {
+=======
+        for outpoint in &outputs {
+>>>>>>> df221913f2ae388b340cd7564cbc6c71783652e7
             let record = self.db.labels.get_output_record(outpoint).unwrap_or(None);
             if let Some(record) = record {
                 if !record.item.spendable {

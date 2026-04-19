@@ -351,6 +351,10 @@ fun TransactionDetailsScreen(
                         IconButton(onClick = {
                             scope.launch {
                                 try {
+<<<<<<< HEAD
+=======
+                                    val previousState = lockState
+>>>>>>> df221913f2ae388b340cd7564cbc6c71783652e7
                                     manager.rust.toggleTransactionLock(txId = txId)
                                     // refresh state after toggle
                                     val newState = manager.rust.transactionLockState(txId = txId)
