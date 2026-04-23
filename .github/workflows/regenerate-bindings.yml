@@ -3,6 +3,10 @@ name: Regenerate Bindings
 on:
   workflow_dispatch: {}
 
+concurrency:
+  group: regenerate-bindings-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   regenerate-android-bindings:
     runs-on: ubuntu-latest
@@ -12,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.ref_name }}
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -65,7 +69,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.ref_name }}
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Pull latest (includes Android binding commit)
         run: git pull --rebase origin ${{ github.ref_name }}
