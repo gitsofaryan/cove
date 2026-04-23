@@ -359,7 +359,6 @@ impl LabelsTable {
             for outpoint in outpoints {
                 let key = OutPointKey::from(&outpoint);
 
-<<<<<<< HEAD
                 let existing = table.get(key.clone())?.map(|r| r.value());
                 let mut record = match existing {
                     Some(r) => r,
@@ -379,15 +378,6 @@ impl LabelsTable {
                 if record.item.spendable == spendable {
                     continue;
                 }
-=======
-                let mut record = table.get(key.clone())?.map(|r| r.value()).unwrap_or_else(|| {
-                    Record::new(OutputRecord {
-                        ref_: outpoint,
-                        label: None,
-                        spendable: true,
-                    })
-                });
->>>>>>> df221913f2ae388b340cd7564cbc6c71783652e7
 
                 record.item.spendable = spendable;
                 record.timestamps.updated_at = jiff::Timestamp::now().as_second().cast_unsigned();
