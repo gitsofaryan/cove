@@ -584,7 +584,7 @@ impl RustWalletManager {
     ) -> Result<TransactionLockState, Error> {
         let state = call!(self.actor.transaction_lock_state(Arc::unwrap_or_clone(tx_id)))
             .await
-            .map_err_str(Error::UnknownError)?;
+            .map_err_str(Error::UnknownError)??;
         Ok(state)
     }
 
@@ -592,7 +592,7 @@ impl RustWalletManager {
     pub async fn toggle_transaction_lock(&self, tx_id: Arc<TxId>) -> Result<(), Error> {
         call!(self.actor.toggle_transaction_lock(Arc::unwrap_or_clone(tx_id)))
             .await
-            .map_err_str(Error::UnknownError)?;
+            .map_err_str(Error::UnknownError)??;
         Ok(())
     }
 
