@@ -6,7 +6,7 @@ on:
       branch:
         description: 'Branch to regenerate bindings for'
         required: true
-        default: 'master'
+        default: 'bulk-utxo-lock-661'
         type: string
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.branch }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -35,7 +35,9 @@ jobs:
           java-version: '17'
 
       - name: Install build dependencies
-        run: cd rust && cargo xtask install-deps
+        run: |
+          cargo install cargo-ndk
+          cd rust && cargo xtask install-deps
 
       - name: Build Rust FFI and generate Kotlin bindings
         run: just build-android
@@ -44,12 +46,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          echo "### Git Status ###"
+          git status
+          
           git add android/app/src/main/java/org/bitcoinppl/cove_core/
+          
           if git diff --cached --quiet; then
             echo "No Android binding changes to commit"
           else
             git commit -m "chore: regenerate Android (Kotlin) UniFFI bindings"
-            git push
+            git push origin HEAD:${{ inputs.branch }}
           fi
 
   regenerate-ios-bindings:
@@ -61,9 +68,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.branch }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
-      - name: Pull latest (includes any Android binding commit)
+      - name: Pull latest (includes Android binding commit)
         run: git pull --rebase origin ${{ inputs.branch }}
 
       - name: Install Rust toolchain
@@ -81,10 +88,15 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          echo "### Git Status ###"
+          git status
+          
           git add ios/CoveCore/Sources/CoveCore/generated/
+          
           if git diff --cached --quiet; then
             echo "No iOS binding changes to commit"
           else
             git commit -m "chore: regenerate iOS (Swift) UniFFI bindings"
-            git push
+            git push origin HEAD:${{ inputs.branch }}
           fi
