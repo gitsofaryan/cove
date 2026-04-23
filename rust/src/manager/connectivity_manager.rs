@@ -3,13 +3,10 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use flume::{Receiver, Sender};
+use flume::{Receiver, Sender, TrySendError};
 use parking_lot::Mutex;
-use tracing::warn;
 
 use cove_device::connectivity::Connectivity;
-
-type ReconcilerMessage = ConnectivityManagerReconcileMessage;
 
 pub static CONNECTIVITY_MANAGER: LazyLock<Arc<RustConnectivityManager>> =
     LazyLock::new(RustConnectivityManager::init);
@@ -25,34 +22,23 @@ pub struct ConnectivityState {
     pub status: ConnectivityStatus,
 }
 
-#[derive(Debug, Clone, uniffi::Enum)]
-pub enum ConnectivityManagerReconcileMessage {
-    Status(ConnectivityStatus),
-}
-
-#[uniffi::export(callback_interface)]
-pub trait ConnectivityManagerReconciler: Send + Sync + std::fmt::Debug + 'static {
-    fn reconcile(&self, message: ConnectivityManagerReconcileMessage);
-}
-
 #[derive(Clone, Debug, uniffi::Object)]
 pub struct RustConnectivityManager {
     is_connected: Arc<AtomicBool>,
-    subscribers: Arc<Mutex<Vec<Sender<bool>>>>,
-    reconciler: Sender<ReconcilerMessage>,
-    reconcile_receiver: Arc<Receiver<ReconcilerMessage>>,
+    subscribers: Arc<Mutex<Vec<Sender<()>>>>,
 }
 
 impl RustConnectivityManager {
     fn init() -> Arc<Self> {
-        let initial_connected = Connectivity::try_global().is_none_or(Connectivity::is_connected);
-        let (sender, receiver) = flume::bounded(1000);
+        let initial_connected = if let Some(connectivity) = Connectivity::try_global() {
+            connectivity.is_connected()
+        } else {
+            false
+        };
 
         Arc::new(Self {
             is_connected: Arc::new(AtomicBool::new(initial_connected)),
             subscribers: Arc::new(Mutex::new(Vec::new())),
-            reconciler: sender,
-            reconcile_receiver: Arc::new(receiver),
         })
     }
 
@@ -60,8 +46,8 @@ impl RustConnectivityManager {
         self.is_connected.load(Ordering::Acquire)
     }
 
-    pub(crate) fn subscribe(&self) -> Receiver<bool> {
-        let (sender, receiver) = flume::bounded(16);
+    pub(crate) fn subscribe(&self) -> Receiver<()> {
+        let (sender, receiver) = flume::bounded(1);
         self.subscribers.lock().push(sender);
         receiver
     }
@@ -72,26 +58,17 @@ impl RustConnectivityManager {
             return false;
         }
 
-        self.broadcast(is_connected);
-        self.send_reconcile(is_connected);
+        self.broadcast();
         true
     }
 
-    fn broadcast(&self, is_connected: bool) {
+    fn broadcast(&self) {
         let mut subscribers = self.subscribers.lock();
-        subscribers.retain(|sender| sender.send(is_connected).is_ok());
-    }
-
-    fn send_reconcile(&self, is_connected: bool) {
-        let message = if is_connected {
-            ConnectivityManagerReconcileMessage::Status(ConnectivityStatus::Connected)
-        } else {
-            ConnectivityManagerReconcileMessage::Status(ConnectivityStatus::Disconnected)
-        };
-
-        if let Err(error) = self.reconciler.send(message) {
-            warn!("Failed to send connectivity reconcile message: {error}");
-        }
+        subscribers.retain(|sender| match sender.try_send(()) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => true,
+            Err(TrySendError::Disconnected(_)) => false,
+        });
     }
 }
 
@@ -100,16 +77,6 @@ impl RustConnectivityManager {
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         CONNECTIVITY_MANAGER.clone()
-    }
-
-    pub fn listen_for_updates(&self, reconciler: Box<dyn ConnectivityManagerReconciler>) {
-        let reconcile_receiver = self.reconcile_receiver.clone();
-
-        std::thread::spawn(move || {
-            while let Ok(message) = reconcile_receiver.recv() {
-                reconciler.reconcile(message);
-            }
-        });
     }
 
     pub fn state(&self) -> ConnectivityState {
@@ -139,10 +106,12 @@ mod tests {
     fn subscribe_receives_changes() {
         let manager = RustConnectivityManager::init();
         let receiver = manager.subscribe();
+        let next = !manager.connected();
 
-        manager.set_connection_state(false);
+        manager.set_connection_state(next);
 
-        assert_eq!(receiver.recv().unwrap(), false);
+        receiver.recv().unwrap();
+        assert_eq!(manager.connected(), next);
     }
 
     #[test]
@@ -154,5 +123,58 @@ mod tests {
         manager.set_connection_state(initial);
 
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn broadcast_keeps_full_subscribers_registered() {
+        let manager = RustConnectivityManager::init();
+        let (full_sender, full_receiver) = flume::bounded(1);
+
+        full_sender.send(()).expect("fill subscriber channel");
+        manager.subscribers.lock().push(full_sender);
+
+        manager.broadcast();
+
+        assert_eq!(manager.subscribers.lock().len(), 1);
+        full_receiver.recv().unwrap();
+
+        manager.broadcast();
+
+        full_receiver.recv().unwrap();
+    }
+
+    #[test]
+    fn subscribe_coalesces_multiple_changes_and_uses_latest_state() {
+        let manager = RustConnectivityManager::init();
+        let receiver = manager.subscribe();
+
+        manager.is_connected.store(false, Ordering::Release);
+        manager.set_connection_state_internal(true);
+        manager.set_connection_state_internal(false);
+
+        receiver.recv().unwrap();
+
+        assert!(receiver.try_recv().is_err());
+        assert!(!manager.connected());
+    }
+
+    #[test]
+    fn broadcast_drops_disconnected_subscribers() {
+        let manager = RustConnectivityManager::init();
+        let (healthy_sender, healthy_receiver) = flume::bounded(1);
+        let (disconnected_sender, disconnected_receiver) = flume::bounded(1);
+
+        drop(disconnected_receiver);
+
+        {
+            let mut subscribers = manager.subscribers.lock();
+            subscribers.push(healthy_sender);
+            subscribers.push(disconnected_sender);
+        }
+
+        manager.broadcast();
+
+        healthy_receiver.recv().unwrap();
+        assert_eq!(manager.subscribers.lock().len(), 1);
     }
 }

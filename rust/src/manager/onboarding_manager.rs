@@ -1,5 +1,12 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
+use backon::{FibonacciBuilder, Retryable as _};
 use cove_device::cloud_storage::{CloudStorage, CloudStorageError};
 use cove_util::ResultExt as _;
 use flume::Receiver;
@@ -10,7 +17,10 @@ use tracing::{info, warn};
 use crate::{
     app::{App, AppAction, FfiApp},
     database::{Database, global_config::GlobalConfigKey},
-    manager::cloud_backup_manager::{CLOUD_BACKUP_MANAGER, RustCloudBackupManager},
+    manager::{
+        cloud_backup_manager::{CLOUD_BACKUP_MANAGER, RustCloudBackupManager},
+        connectivity_manager::CONNECTIVITY_MANAGER,
+    },
     mnemonic::{Mnemonic as StoredMnemonic, MnemonicExt, NumberOfBip39Words},
     network::Network,
     pending_wallet::PendingWallet,
@@ -30,6 +40,7 @@ pub enum OnboardingStep {
     #[default]
     CloudCheck,
     RestoreOffer,
+    RestoreOffline,
     RestoreUnavailable,
     Restoring,
     Welcome,
@@ -213,6 +224,9 @@ enum FlowState {
         origin: RestoreOrigin,
         error_message: Option<String>,
     },
+    RestoreOffline {
+        origin: RestoreOrigin,
+    },
     RestoreUnavailable {
         origin: RestoreOrigin,
     },
@@ -303,6 +317,8 @@ struct InternalState {
 #[derive(Clone, Debug, uniffi::Object)]
 pub struct RustOnboardingManager {
     state: Arc<RwLock<InternalState>>,
+    cloud_check_in_flight: Arc<AtomicBool>,
+    pending_cloud_check_retry: Arc<AtomicBool>,
     reconciler: MessageSender<Message>,
     reconcile_receiver: Arc<Receiver<SingleOrMany<Message>>>,
 }
@@ -341,10 +357,13 @@ impl RustOnboardingManager {
 
         let manager = Arc::new(Self {
             state: Arc::new(RwLock::new(InternalState::new(resolution.flow))),
+            cloud_check_in_flight: Arc::new(AtomicBool::new(false)),
+            pending_cloud_check_retry: Arc::new(AtomicBool::new(false)),
             reconciler: MessageSender::new(sender),
             reconcile_receiver: Arc::new(receiver),
         });
 
+        manager.start_connectivity_listener();
         manager.maybe_advance_accepted_terms();
 
         if should_start_cloud_check {
@@ -401,7 +420,59 @@ impl RustOnboardingManager {
 }
 
 impl RustOnboardingManager {
+    fn start_connectivity_listener(self: &Arc<Self>) {
+        let manager = Arc::downgrade(self);
+        let receiver = CONNECTIVITY_MANAGER.subscribe();
+
+        std::thread::spawn(move || {
+            while receiver.recv().is_ok() {
+                let Some(manager) = manager.upgrade() else {
+                    break;
+                };
+
+                let connected = CONNECTIVITY_MANAGER.connected();
+                manager.handle_connectivity_change(connected);
+            }
+        });
+    }
+
+    fn handle_connectivity_change(self: &Arc<Self>, connected: bool) {
+        if !connected {
+            return;
+        }
+
+        if self.cloud_check_in_flight.load(Ordering::Acquire)
+            && !self.mark_pending_cloud_check_retry()
+        {
+            return;
+        }
+
+        self.start_offline_cloud_check_retry();
+    }
+
+    fn mark_pending_cloud_check_retry(&self) -> bool {
+        self.pending_cloud_check_retry.store(true, Ordering::Release);
+
+        if self.cloud_check_in_flight.load(Ordering::Acquire) {
+            return false;
+        }
+
+        self.pending_cloud_check_retry.swap(false, Ordering::AcqRel)
+    }
+
+    fn start_offline_cloud_check_retry(self: &Arc<Self>) {
+        if !self.prepare_offline_cloud_check_retry() {
+            return;
+        }
+
+        self.start_cloud_check();
+    }
+
     fn start_cloud_check(self: &Arc<Self>) {
+        if self.cloud_check_in_flight.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
         let me = Arc::clone(self);
         cove_tokio::task::spawn(async move {
             if CLOUD_BACKUP_MANAGER.is_offline() {
@@ -409,10 +480,8 @@ impl RustOnboardingManager {
                 return;
             }
 
-            let retry_delays = [1u64, 2, 2, 3, 5, 10];
             let cloud = CloudStorage::global().clone();
             let outcome = determine_cloud_check_outcome_async(
-                &retry_delays,
                 || {
                     let cloud = cloud.clone();
                     async move { cloud.has_any_cloud_backup().await }
@@ -424,8 +493,43 @@ impl RustOnboardingManager {
         });
     }
 
-    fn finish_cloud_check(&self, outcome: CloudCheckOutcome) {
-        self.apply_event(InternalEvent::CloudCheckFinished(outcome));
+    fn prepare_offline_cloud_check_retry(&self) -> bool {
+        self.mutate_state(|state, deferred| state.prepare_offline_cloud_check_retry(deferred))
+    }
+
+    fn finish_cloud_check(self: &Arc<Self>, outcome: CloudCheckOutcome) {
+        let should_retry =
+            self.finish_cloud_check_and_prepare_retry(outcome, CONNECTIVITY_MANAGER.connected());
+        if should_retry {
+            self.start_cloud_check();
+        }
+    }
+
+    fn finish_cloud_check_and_prepare_retry(
+        &self,
+        outcome: CloudCheckOutcome,
+        connected: bool,
+    ) -> bool {
+        self.mutate_state(|state, deferred| {
+            state.flow.apply_event(
+                InternalEvent::CloudCheckFinished(outcome),
+                &mut state.cloud_restore_discovery,
+                state.restore_offer_allowed,
+            );
+            self.cloud_check_in_flight.store(false, Ordering::Release);
+
+            let retry_was_requested = self.pending_cloud_check_retry.swap(false, Ordering::AcqRel);
+            let should_retry_offline_cloud_check = retry_was_requested
+                && outcome == CloudCheckOutcome::Inconclusive(CloudCheckIssue::Offline)
+                && connected;
+            if should_retry_offline_cloud_check && state.prepare_offline_cloud_check_retry(deferred)
+            {
+                return true;
+            }
+
+            state.sync_ui(deferred);
+            false
+        })
     }
 
     fn apply_event(&self, event: InternalEvent) {
@@ -618,6 +722,23 @@ impl InternalState {
         }
 
         self.flow.resolve_terms_acceptance(true)
+    }
+
+    fn prepare_offline_cloud_check_retry(
+        &mut self,
+        deferred: &mut DeferredSender<Message>,
+    ) -> bool {
+        if self.cloud_restore_discovery
+            != CloudRestoreDiscovery::Inconclusive(CloudCheckIssue::Offline)
+            || !self.flow.is_offline_cloud_check_retry_eligible()
+        {
+            return false;
+        }
+
+        self.cloud_restore_discovery = CloudRestoreDiscovery::Checking;
+        self.flow.prepare_for_cloud_check_retry();
+        self.sync_ui(deferred);
+        true
     }
 
     fn sync_ui(&mut self, deferred: &mut DeferredSender<Message>) {
@@ -878,6 +999,9 @@ impl FlowState {
                 *restore_offer_allowed = false;
                 (origin.flow_state(), TransitionCommand::None)
             }
+            (Self::RestoreOffline { origin }, OnboardingAction::ContinueWithoutCloudRestore) => {
+                (origin.flow_state_after_restore_unavailable(), TransitionCommand::None)
+            }
             (
                 Self::RestoreUnavailable { origin },
                 OnboardingAction::ContinueWithoutCloudRestore,
@@ -909,6 +1033,9 @@ impl FlowState {
             }
             (Self::HardwareImport, OnboardingAction::Back) => {
                 (Self::StorageChoice { error_message: None }, TransitionCommand::None)
+            }
+            (Self::RestoreOffline { origin }, OnboardingAction::Back) => {
+                (origin.flow_state(), TransitionCommand::None)
             }
             (Self::RestoreUnavailable { origin }, OnboardingAction::Back) => {
                 (origin.flow_state(), TransitionCommand::None)
@@ -977,10 +1104,7 @@ impl FlowState {
             (
                 Self::CloudCheck { origin },
                 InternalEvent::CloudCheckFinished(CloudCheckOutcome::Inconclusive(issue)),
-            ) => {
-                let _ = issue;
-                Self::RestoreOffer { origin, error_message: None }
-            }
+            ) => Self::restore_inconclusive_entry_for(issue, origin),
             (
                 Self::Welcome { .. },
                 InternalEvent::CloudCheckFinished(CloudCheckOutcome::BackupFound),
@@ -1064,6 +1188,10 @@ impl FlowState {
             Self::RestoreOffer { error_message, .. } => {
                 state.step = OnboardingStep::RestoreOffer;
                 state.error_message = error_message.clone();
+                state
+            }
+            Self::RestoreOffline { .. } => {
+                state.step = OnboardingStep::RestoreOffline;
                 state
             }
             Self::RestoreUnavailable { .. } => {
@@ -1197,7 +1325,16 @@ impl FlowState {
                 Self::RestoreOffer { origin, error_message: None }
             }
             CloudRestoreDiscovery::NoBackupFound => Self::RestoreUnavailable { origin },
-            CloudRestoreDiscovery::Inconclusive(_) => {
+            CloudRestoreDiscovery::Inconclusive(issue) => {
+                Self::restore_inconclusive_entry_for(issue, origin)
+            }
+        }
+    }
+
+    fn restore_inconclusive_entry_for(issue: CloudCheckIssue, origin: RestoreOrigin) -> Self {
+        match issue {
+            CloudCheckIssue::Offline => Self::RestoreOffline { origin },
+            CloudCheckIssue::CloudUnavailable | CloudCheckIssue::Unknown => {
                 Self::RestoreOffer { origin, error_message: None }
             }
         }
@@ -1245,6 +1382,33 @@ impl FlowState {
                 progress.clone()
             }
             _ => None,
+        }
+    }
+
+    fn is_offline_cloud_check_retry_eligible(&self) -> bool {
+        matches!(
+            self,
+            Self::CloudCheck { .. }
+                | Self::RestoreOffer { .. }
+                | Self::RestoreOffline { .. }
+                | Self::Welcome { .. }
+                | Self::BitcoinChoice { .. }
+                | Self::ReturningUserChoice
+                | Self::StorageChoice { .. }
+                | Self::SoftwareChoice { .. }
+        )
+    }
+
+    fn prepare_for_cloud_check_retry(&mut self) {
+        let origin = match self {
+            Self::CloudCheck { origin }
+            | Self::RestoreOffer { origin, .. }
+            | Self::RestoreOffline { origin } => Some(*origin),
+            _ => None,
+        };
+
+        if let Some(origin) = origin {
+            *self = Self::CloudCheck { origin };
         }
     }
 }
@@ -1423,7 +1587,7 @@ fn classify_cloud_check_error(error: &CloudStorageError) -> CloudCheckIssue {
 fn cloud_check_inconclusive_message(issue: CloudCheckIssue) -> String {
     match issue {
         CloudCheckIssue::Offline => {
-            "You may be offline. Connect to the internet and try again, or you can still try restoring with your passkey if you're reinstalling this device.".into()
+            "You're offline, so Cove can't check for an iCloud backup right now. You can continue onboarding now and check Cloud Backup later in Settings.".into()
         }
         CloudCheckIssue::CloudUnavailable => {
             "We couldn't confirm whether an iCloud backup is available because iCloud may be unavailable. You can still try restoring with your passkey if you're reinstalling this device.".into()
@@ -1434,34 +1598,32 @@ fn cloud_check_inconclusive_message(issue: CloudCheckIssue) -> String {
     }
 }
 
-async fn determine_cloud_check_outcome_async<F, Fut, S, SleepFut>(
-    retry_delays: &[u64],
+async fn determine_cloud_check_outcome_async<F, Fut, S>(
     mut has_any_cloud_backup: F,
-    mut sleep: S,
+    sleep: S,
 ) -> CloudCheckOutcome
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<bool, CloudStorageError>>,
-    S: FnMut(Duration) -> SleepFut,
-    SleepFut: std::future::Future<Output = ()>,
+    S: backon::Sleeper,
 {
-    for (attempt, delay) in retry_delays.iter().enumerate() {
-        info!(
-            "Onboarding: checking cloud backup attempt={}/{}",
-            attempt + 1,
-            retry_delays.len() + 1
-        );
+    let max_retries = 6;
+    let mut attempt = 0;
+    let result = (|| {
+        attempt += 1;
+        info!("Onboarding: checking cloud backup attempt={attempt}");
+        has_any_cloud_backup()
+    })
+    .retry(
+        FibonacciBuilder::default()
+            .with_max_delay(Duration::from_secs(10))
+            .with_max_times(max_retries),
+    )
+    .sleep(sleep)
+    .notify(|error: &CloudStorageError, _| warn!("Onboarding: cloud backup check failed: {error}"))
+    .await;
 
-        match has_any_cloud_backup().await {
-            Ok(true) => return CloudCheckOutcome::BackupFound,
-            Ok(false) => return CloudCheckOutcome::NoBackupConfirmed,
-            Err(error) => warn!("Onboarding: cloud backup check failed: {error}"),
-        }
-
-        sleep(Duration::from_secs(*delay)).await;
-    }
-
-    match has_any_cloud_backup().await {
+    match result {
         Ok(true) => CloudCheckOutcome::BackupFound,
         Ok(false) => CloudCheckOutcome::NoBackupConfirmed,
         Err(error) => {
@@ -1750,6 +1912,26 @@ mod tests {
     }
 
     #[test]
+    fn explicit_restore_while_offline_goes_to_restore_offline() {
+        let mut flow = FlowState::ReturningUserChoice;
+        let mut restore_offer_allowed = true;
+
+        let command = flow.apply_user_action(
+            OnboardingAction::SelectReturningUserFlow {
+                selection: OnboardingReturningUserSelection::RestoreFromCoveBackup,
+            },
+            CloudRestoreDiscovery::Inconclusive(CloudCheckIssue::Offline),
+            &mut restore_offer_allowed,
+        );
+
+        assert_eq!(command, TransitionCommand::None);
+        assert!(matches!(
+            flow,
+            FlowState::RestoreOffline { origin: RestoreOrigin::ReturningUserChoice }
+        ));
+    }
+
+    #[test]
     fn empty_wallet_startup_begins_at_welcome_and_starts_background_cloud_check() {
         let resolution = resolve_initial_flow(None, false, false, |_, _, _| None);
 
@@ -1986,6 +2168,47 @@ mod tests {
     }
 
     #[test]
+    fn cloud_check_offline_goes_to_restore_offline_screen() {
+        let mut flow = FlowState::CloudCheck { origin: RestoreOrigin::Startup };
+        let mut discovery = CloudRestoreDiscovery::Checking;
+
+        flow.apply_event(
+            InternalEvent::CloudCheckFinished(CloudCheckOutcome::Inconclusive(
+                CloudCheckIssue::Offline,
+            )),
+            &mut discovery,
+            true,
+        );
+
+        assert_eq!(discovery, CloudRestoreDiscovery::Inconclusive(CloudCheckIssue::Offline));
+        assert!(matches!(flow, FlowState::RestoreOffline { origin: RestoreOrigin::Startup }));
+        assert_eq!(flow.ui_state(discovery, false).step, OnboardingStep::RestoreOffline);
+    }
+
+    #[test]
+    fn cloud_check_non_offline_inconclusive_keeps_restore_offer_flow() {
+        let mut flow = FlowState::CloudCheck { origin: RestoreOrigin::Startup };
+        let mut discovery = CloudRestoreDiscovery::Checking;
+
+        flow.apply_event(
+            InternalEvent::CloudCheckFinished(CloudCheckOutcome::Inconclusive(
+                CloudCheckIssue::CloudUnavailable,
+            )),
+            &mut discovery,
+            true,
+        );
+
+        assert_eq!(
+            discovery,
+            CloudRestoreDiscovery::Inconclusive(CloudCheckIssue::CloudUnavailable)
+        );
+        assert!(matches!(
+            flow,
+            FlowState::RestoreOffer { origin: RestoreOrigin::Startup, error_message: None }
+        ));
+    }
+
+    #[test]
     fn skip_restore_returns_to_origin_and_disables_future_prompts() {
         let mut flow =
             FlowState::RestoreOffer { origin: RestoreOrigin::StorageChoice, error_message: None };
@@ -2035,6 +2258,29 @@ mod tests {
         let command = flow.apply_user_action(
             OnboardingAction::ContinueWithoutCloudRestore,
             CloudRestoreDiscovery::NoBackupFound,
+            &mut restore_offer_allowed,
+        );
+
+        assert_eq!(command, TransitionCommand::None);
+        assert!(matches!(
+            flow,
+            FlowState::Terms {
+                context: TermsContext::StartupRestoreRecovery,
+                error_message: None,
+                progress: None,
+                allow_auto_advance: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn continue_without_cloud_restore_from_startup_offline_goes_to_terms() {
+        let mut flow = FlowState::RestoreOffline { origin: RestoreOrigin::Startup };
+        let mut restore_offer_allowed = true;
+
+        let command = flow.apply_user_action(
+            OnboardingAction::ContinueWithoutCloudRestore,
+            CloudRestoreDiscovery::Inconclusive(CloudCheckIssue::Offline),
             &mut restore_offer_allowed,
         );
 
@@ -2122,6 +2368,145 @@ mod tests {
     }
 
     #[test]
+    fn offline_retry_rechecks_from_restore_offline_screen() {
+        let mut state = preview_internal_state(
+            FlowState::RestoreOffline { origin: RestoreOrigin::Startup },
+            CloudRestoreDiscovery::Inconclusive(CloudCheckIssue::Offline),
+        );
+
+        assert!(prepare_offline_cloud_check_retry(&mut state));
+        assert_eq!(state.cloud_restore_discovery, CloudRestoreDiscovery::Checking);
+        assert!(matches!(state.flow, FlowState::CloudCheck { origin: RestoreOrigin::Startup }));
+        assert_eq!(state.ui.step, OnboardingStep::CloudCheck);
+        assert_eq!(state.ui.cloud_restore_state, OnboardingCloudRestoreState::Checking);
+    }
+
+    #[test]
+    fn offline_retry_rechecks_in_background_on_early_screens() {
+        let mut state = preview_internal_state(
+            FlowState::Welcome { error_message: None },
+            CloudRestoreDiscovery::Inconclusive(CloudCheckIssue::Offline),
+        );
+
+        assert!(prepare_offline_cloud_check_retry(&mut state));
+        assert_eq!(state.cloud_restore_discovery, CloudRestoreDiscovery::Checking);
+        assert!(matches!(state.flow, FlowState::Welcome { error_message: None }));
+        assert_eq!(state.ui.step, OnboardingStep::Welcome);
+        assert_eq!(state.ui.cloud_restore_state, OnboardingCloudRestoreState::Checking);
+        assert_eq!(state.ui.cloud_restore_message, None);
+    }
+
+    #[test]
+    fn offline_retry_ignores_non_offline_issues_and_late_states() {
+        let mut cloud_unavailable = preview_internal_state(
+            FlowState::Welcome { error_message: None },
+            CloudRestoreDiscovery::Inconclusive(CloudCheckIssue::CloudUnavailable),
+        );
+        let mut late_state = preview_internal_state(
+            FlowState::CreatingWallet(preview_created_wallet_flow(OnboardingBranch::NewUser)),
+            CloudRestoreDiscovery::Inconclusive(CloudCheckIssue::Offline),
+        );
+
+        assert!(!prepare_offline_cloud_check_retry(&mut cloud_unavailable));
+        assert_eq!(
+            cloud_unavailable.cloud_restore_discovery,
+            CloudRestoreDiscovery::Inconclusive(CloudCheckIssue::CloudUnavailable)
+        );
+        assert!(!prepare_offline_cloud_check_retry(&mut late_state));
+        assert_eq!(
+            late_state.cloud_restore_discovery,
+            CloudRestoreDiscovery::Inconclusive(CloudCheckIssue::Offline)
+        );
+        assert!(matches!(late_state.flow, FlowState::CreatingWallet(_)));
+    }
+
+    #[test]
+    fn connectivity_reconnect_while_cloud_check_is_in_flight_retries_after_offline_finish() {
+        let manager = preview_manager(
+            FlowState::Welcome { error_message: None },
+            CloudRestoreDiscovery::Checking,
+        );
+        manager.cloud_check_in_flight.store(true, Ordering::Release);
+
+        manager.handle_connectivity_change(true);
+
+        assert!(manager.pending_cloud_check_retry.load(Ordering::Acquire));
+        assert_eq!(manager.state().cloud_restore_state, OnboardingCloudRestoreState::Checking);
+
+        assert!(manager.finish_cloud_check_and_prepare_retry(
+            CloudCheckOutcome::Inconclusive(CloudCheckIssue::Offline),
+            true,
+        ));
+        assert!(!manager.cloud_check_in_flight.load(Ordering::Acquire));
+        assert!(!manager.pending_cloud_check_retry.load(Ordering::Acquire));
+        assert_eq!(manager.state().cloud_restore_state, OnboardingCloudRestoreState::Checking);
+        assert_eq!(manager.state().cloud_restore_message, None);
+        assert_no_reconcile_messages(&manager);
+    }
+
+    #[test]
+    fn late_pending_connectivity_retry_after_offline_finish_is_taken_over() {
+        let manager = preview_manager(
+            FlowState::Welcome { error_message: None },
+            CloudRestoreDiscovery::Checking,
+        );
+        manager.cloud_check_in_flight.store(true, Ordering::Release);
+
+        assert!(!manager.finish_cloud_check_and_prepare_retry(
+            CloudCheckOutcome::Inconclusive(CloudCheckIssue::Offline),
+            true,
+        ));
+        assert_eq!(manager.state().cloud_restore_state, OnboardingCloudRestoreState::Inconclusive);
+
+        assert!(manager.mark_pending_cloud_check_retry());
+        assert!(!manager.pending_cloud_check_retry.load(Ordering::Acquire));
+        assert!(manager.prepare_offline_cloud_check_retry());
+        assert_eq!(manager.state().cloud_restore_state, OnboardingCloudRestoreState::Checking);
+        assert_eq!(manager.state().cloud_restore_message, None);
+    }
+
+    #[test]
+    fn startup_restore_retry_after_offline_finish_skips_transient_offline_messages() {
+        let manager = preview_manager(
+            FlowState::CloudCheck { origin: RestoreOrigin::Startup },
+            CloudRestoreDiscovery::Checking,
+        );
+        manager.cloud_check_in_flight.store(true, Ordering::Release);
+
+        manager.handle_connectivity_change(true);
+
+        assert!(manager.finish_cloud_check_and_prepare_retry(
+            CloudCheckOutcome::Inconclusive(CloudCheckIssue::Offline),
+            true,
+        ));
+        assert!(!manager.cloud_check_in_flight.load(Ordering::Acquire));
+        assert!(!manager.pending_cloud_check_retry.load(Ordering::Acquire));
+        assert_eq!(manager.state().step, OnboardingStep::CloudCheck);
+        assert_eq!(manager.state().cloud_restore_state, OnboardingCloudRestoreState::Checking);
+        assert_eq!(manager.state().cloud_restore_message, None);
+        assert_no_reconcile_messages(&manager);
+    }
+
+    #[test]
+    fn connectivity_reconnect_while_cloud_check_is_in_flight_does_not_retry_non_offline_finish() {
+        let manager = preview_manager(
+            FlowState::Welcome { error_message: None },
+            CloudRestoreDiscovery::Checking,
+        );
+        manager.cloud_check_in_flight.store(true, Ordering::Release);
+
+        manager.handle_connectivity_change(true);
+
+        assert!(
+            !manager
+                .finish_cloud_check_and_prepare_retry(CloudCheckOutcome::NoBackupConfirmed, true,)
+        );
+        assert!(!manager.cloud_check_in_flight.load(Ordering::Acquire));
+        assert!(!manager.pending_cloud_check_retry.load(Ordering::Acquire));
+        assert_eq!(manager.state().cloud_restore_state, OnboardingCloudRestoreState::NoBackupFound);
+    }
+
+    #[test]
     fn cloud_check_timeout_is_treated_as_cloud_unavailable() {
         let error = CloudStorageError::NotAvailable("iCloud metadata query timed out".into());
 
@@ -2140,7 +2525,6 @@ mod tests {
         let slept = Arc::new(Mutex::new(Vec::new()));
         let sleep_log = Arc::clone(&slept);
         let outcome = determine_cloud_check_outcome_async(
-            &[1, 2, 3],
             || async { Ok(false) },
             move |duration| {
                 let sleep_log = Arc::clone(&sleep_log);
@@ -2157,22 +2541,13 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn cloud_check_retries_errors_and_returns_inconclusive() {
-        let slept = Arc::new(Mutex::new(Vec::new()));
-        let sleep_log = Arc::clone(&slept);
         let outcome = determine_cloud_check_outcome_async(
-            &[1, 2],
             || async { Err(CloudStorageError::NotAvailable("network timed out".into())) },
-            move |duration| {
-                let sleep_log = Arc::clone(&sleep_log);
-                async move {
-                    sleep_log.lock().unwrap().push(duration);
-                }
-            },
+            |_| async {},
         )
         .await;
 
         assert_eq!(outcome, CloudCheckOutcome::Inconclusive(CloudCheckIssue::CloudUnavailable));
-        assert_eq!(*slept.lock().unwrap(), vec![Duration::from_secs(1), Duration::from_secs(2)]);
     }
 
     #[test]
@@ -2281,5 +2656,38 @@ mod tests {
             cloud_backup_enabled: false,
             secret_words_saved: false,
         }
+    }
+    fn preview_internal_state(
+        flow: FlowState,
+        cloud_restore_discovery: CloudRestoreDiscovery,
+    ) -> InternalState {
+        let ui = flow.ui_state(cloud_restore_discovery, false);
+
+        InternalState { flow, cloud_restore_discovery, restore_offer_allowed: true, ui }
+    }
+
+    fn preview_manager(
+        flow: FlowState,
+        cloud_restore_discovery: CloudRestoreDiscovery,
+    ) -> Arc<RustOnboardingManager> {
+        let (sender, receiver) = flume::bounded(16);
+
+        Arc::new(RustOnboardingManager {
+            state: Arc::new(RwLock::new(preview_internal_state(flow, cloud_restore_discovery))),
+            cloud_check_in_flight: Arc::new(AtomicBool::new(false)),
+            pending_cloud_check_retry: Arc::new(AtomicBool::new(false)),
+            reconciler: MessageSender::new(sender),
+            reconcile_receiver: Arc::new(receiver),
+        })
+    }
+
+    fn assert_no_reconcile_messages(manager: &RustOnboardingManager) {
+        assert!(matches!(manager.reconcile_receiver.try_recv(), Err(flume::TryRecvError::Empty)));
+    }
+
+    fn prepare_offline_cloud_check_retry(state: &mut InternalState) -> bool {
+        let (sender, _receiver) = flume::bounded(16);
+        let mut deferred = DeferredSender::new(MessageSender::new(sender));
+        state.prepare_offline_cloud_check_retry(&mut deferred)
     }
 }

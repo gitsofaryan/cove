@@ -746,9 +746,6 @@ internal interface UniffiCallbackInterfaceCoinControlManagerReconcilerMethod0 : 
 internal interface UniffiCallbackInterfaceCoinControlManagerReconcilerMethod1 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`messages`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
-internal interface UniffiCallbackInterfaceConnectivityManagerReconcilerMethod0 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`message`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
-}
 internal interface UniffiCallbackInterfaceImportWalletManagerReconcilerMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`message`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
@@ -861,25 +858,6 @@ internal open class UniffiVTableCallbackInterfaceCoinControlManagerReconciler(
         `uniffiClone` = other.`uniffiClone`
         `reconcile` = other.`reconcile`
         `reconcileMany` = other.`reconcileMany`
-    }
-
-}
-@Structure.FieldOrder("uniffiFree", "uniffiClone", "reconcile")
-internal open class UniffiVTableCallbackInterfaceConnectivityManagerReconciler(
-    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-    @JvmField internal var `reconcile`: UniffiCallbackInterfaceConnectivityManagerReconcilerMethod0? = null,
-) : Structure() {
-    class UniffiByValue(
-        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-        `reconcile`: UniffiCallbackInterfaceConnectivityManagerReconcilerMethod0? = null,
-    ): UniffiVTableCallbackInterfaceConnectivityManagerReconciler(`uniffiFree`,`uniffiClone`,`reconcile`,), Structure.ByValue
-
-   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceConnectivityManagerReconciler) {
-        `uniffiFree` = other.`uniffiFree`
-        `uniffiClone` = other.`uniffiClone`
-        `reconcile` = other.`reconcile`
     }
 
 }
@@ -1456,8 +1434,6 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_cove_checksum_method_rustconnectivitymanager_is_connected(
     ): Short
-    external fun uniffi_cove_checksum_method_rustconnectivitymanager_listen_for_updates(
-    ): Short
     external fun uniffi_cove_checksum_method_rustconnectivitymanager_set_connection_state(
     ): Short
     external fun uniffi_cove_checksum_method_rustconnectivitymanager_state(
@@ -1625,6 +1601,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_cove_checksum_method_rustwalletmanager_number_of_confirmations_fmt(
     ): Short
     external fun uniffi_cove_checksum_method_rustwalletmanager_required_deletion_confirmations(
+    ): Short
+    external fun uniffi_cove_checksum_method_rustwalletmanager_rescan_wallet_with_gap_limit(
     ): Short
     external fun uniffi_cove_checksum_method_rustwalletmanager_save_unsigned_transaction(
     ): Short
@@ -1990,8 +1968,6 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_cove_checksum_method_coincontrolmanagerreconciler_reconcile_many(
     ): Short
-    external fun uniffi_cove_checksum_method_connectivitymanagerreconciler_reconcile(
-    ): Short
     external fun uniffi_cove_checksum_method_importwalletmanagerreconciler_reconcile(
     ): Short
     external fun uniffi_cove_checksum_method_onboardingmanagerreconciler_reconcile(
@@ -2032,7 +2008,6 @@ internal object UniffiLib {
         uniffiCallbackInterfaceAuthManagerReconciler.register(this)
         uniffiCallbackInterfaceCloudBackupManagerReconciler.register(this)
         uniffiCallbackInterfaceCoinControlManagerReconciler.register(this)
-        uniffiCallbackInterfaceConnectivityManagerReconciler.register(this)
         uniffiCallbackInterfaceFfiReconcile.register(this)
         uniffiCallbackInterfaceImportWalletManagerReconciler.register(this)
         uniffiCallbackInterfaceOnboardingManagerReconciler.register(this)
@@ -2509,8 +2484,6 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_cove_fn_method_rustconnectivitymanager_is_connected(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
-    external fun uniffi_cove_fn_method_rustconnectivitymanager_listen_for_updates(`ptr`: Long,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
     external fun uniffi_cove_fn_method_rustconnectivitymanager_set_connection_state(`ptr`: Long,`isConnected`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_cove_fn_method_rustconnectivitymanager_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -2719,6 +2692,8 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_cove_fn_method_rustwalletmanager_required_deletion_confirmations(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
+    external fun uniffi_cove_fn_method_rustwalletmanager_rescan_wallet_with_gap_limit(`ptr`: Long,`gapLimit`: Int,
+    ): Long
     external fun uniffi_cove_fn_method_rustwalletmanager_save_unsigned_transaction(`ptr`: Long,`details`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_cove_fn_method_rustwalletmanager_selected_fiat_currency(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -3134,8 +3109,6 @@ internal object UniffiLib {
     external fun uniffi_cove_fn_init_callback_vtable_cloudbackupmanagerreconciler(`vtable`: UniffiVTableCallbackInterfaceCloudBackupManagerReconciler,
     ): Unit
     external fun uniffi_cove_fn_init_callback_vtable_coincontrolmanagerreconciler(`vtable`: UniffiVTableCallbackInterfaceCoinControlManagerReconciler,
-    ): Unit
-    external fun uniffi_cove_fn_init_callback_vtable_connectivitymanagerreconciler(`vtable`: UniffiVTableCallbackInterfaceConnectivityManagerReconciler,
     ): Unit
     external fun uniffi_cove_fn_init_callback_vtable_importwalletmanagerreconciler(`vtable`: UniffiVTableCallbackInterfaceImportWalletManagerReconciler,
     ): Unit
@@ -4133,9 +4106,6 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_cove_checksum_method_rustconnectivitymanager_is_connected() != 47607.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_cove_checksum_method_rustconnectivitymanager_listen_for_updates() != 49341.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
     if (lib.uniffi_cove_checksum_method_rustconnectivitymanager_set_connection_state() != 17798.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -4386,6 +4356,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_method_rustwalletmanager_required_deletion_confirmations() != 30427.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_cove_checksum_method_rustwalletmanager_rescan_wallet_with_gap_limit() != 28630.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_method_rustwalletmanager_save_unsigned_transaction() != 43358.toShort()) {
@@ -4932,9 +4905,6 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_method_coincontrolmanagerreconciler_reconcile_many() != 14668.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_cove_checksum_method_connectivitymanagerreconciler_reconcile() != 20375.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_cove_checksum_method_importwalletmanagerreconciler_reconcile() != 13279.toShort()) {
@@ -18716,8 +18686,6 @@ public interface RustConnectivityManagerInterface {
     
     fun `isConnected`(): kotlin.Boolean
     
-    fun `listenForUpdates`(`reconciler`: ConnectivityManagerReconciler)
-    
     fun `setConnectionState`(`isConnected`: kotlin.Boolean)
     
     fun `state`(): ConnectivityState
@@ -18845,18 +18813,6 @@ open class RustConnectivityManager: Disposable, AutoCloseable, RustConnectivityM
     }
     )
     }
-    
-
-    override fun `listenForUpdates`(`reconciler`: ConnectivityManagerReconciler)
-        = 
-    callWithHandle {
-    uniffiRustCall() { _status ->
-    UniffiLib.uniffi_cove_fn_method_rustconnectivitymanager_listen_for_updates(
-        it,
-        FfiConverterTypeConnectivityManagerReconciler.lower(`reconciler`),_status)
-}
-    }
-    
     
 
     override fun `setConnectionState`(`isConnected`: kotlin.Boolean)
@@ -20792,6 +20748,8 @@ public interface RustWalletManagerInterface {
      */
     fun `requiredDeletionConfirmations`(): kotlin.UByte
     
+    suspend fun `rescanWalletWithGapLimit`(`gapLimit`: kotlin.UInt)
+    
     fun `saveUnsignedTransaction`(`details`: ConfirmDetails)
     
     fun `selectedFiatCurrency`(): FiatCurrency
@@ -21720,6 +21678,28 @@ open class RustWalletManager: Disposable, AutoCloseable, RustWalletManagerInterf
     )
     }
     
+
+    
+    @Throws(WalletManagerException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `rescanWalletWithGapLimit`(`gapLimit`: kotlin.UInt) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_cove_fn_method_rustwalletmanager_rescan_wallet_with_gap_limit(
+                uniffiHandle,
+                FfiConverterUInt.lower(`gapLimit`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_cove_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_cove_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_cove_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        WalletManagerException.ErrorHandler,
+    )
+    }
 
     
     @Throws(WalletManagerException::class)override fun `saveUnsignedTransaction`(`details`: ConfirmDetails)
@@ -35927,65 +35907,6 @@ public object FfiConverterTypeColdWalletRoute: FfiConverterRustBuffer<ColdWallet
 
 
 
-sealed class ConnectivityManagerReconcileMessage {
-    
-    data class Status(
-        val v1: org.bitcoinppl.cove_core.ConnectivityStatus) : ConnectivityManagerReconcileMessage()
-        
-    {
-        
-
-        companion object
-    }
-    
-
-    
-
-    
-    
-
-
-    companion object
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypeConnectivityManagerReconcileMessage : FfiConverterRustBuffer<ConnectivityManagerReconcileMessage>{
-    override fun read(buf: ByteBuffer): ConnectivityManagerReconcileMessage {
-        return when(buf.getInt()) {
-            1 -> ConnectivityManagerReconcileMessage.Status(
-                FfiConverterTypeConnectivityStatus.read(buf),
-                )
-            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
-        }
-    }
-
-    override fun allocationSize(value: ConnectivityManagerReconcileMessage): ULong = when(value) {
-        is ConnectivityManagerReconcileMessage.Status -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterTypeConnectivityStatus.allocationSize(value.v1)
-            )
-        }
-    }
-
-    override fun write(value: ConnectivityManagerReconcileMessage, buf: ByteBuffer) {
-        when(value) {
-            is ConnectivityManagerReconcileMessage.Status -> {
-                buf.putInt(1)
-                FfiConverterTypeConnectivityStatus.write(value.v1, buf)
-                Unit
-            }
-        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
-    }
-}
-
-
-
-
-
 
 enum class ConnectivityStatus {
     
@@ -41555,6 +41476,7 @@ enum class OnboardingStep {
     
     CLOUD_CHECK,
     RESTORE_OFFER,
+    RESTORE_OFFLINE,
     RESTORE_UNAVAILABLE,
     RESTORING,
     WELCOME,
@@ -52189,66 +52111,6 @@ internal object uniffiCallbackInterfaceCoinControlManagerReconciler {
  * @suppress
  */
 public object FfiConverterTypeCoinControlManagerReconciler: FfiConverterCallbackInterface<CoinControlManagerReconciler>()
-
-
-
-
-
-public interface ConnectivityManagerReconciler {
-    
-    fun `reconcile`(`message`: ConnectivityManagerReconcileMessage)
-    
-    companion object
-}
-
-
-
-// Put the implementation in an object so we don't pollute the top-level namespace
-internal object uniffiCallbackInterfaceConnectivityManagerReconciler {
-    internal object `reconcile`: UniffiCallbackInterfaceConnectivityManagerReconcilerMethod0 {
-        override fun callback(`uniffiHandle`: Long,`message`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
-            val uniffiObj = FfiConverterTypeConnectivityManagerReconciler.handleMap.get(uniffiHandle)
-            val makeCall = { ->
-                uniffiObj.`reconcile`(
-                    FfiConverterTypeConnectivityManagerReconcileMessage.lift(`message`),
-                )
-            }
-            val writeReturn = { _: Unit -> Unit }
-            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
-        }
-    }
-
-    internal object uniffiFree: UniffiCallbackInterfaceFree {
-        override fun callback(handle: Long) {
-            FfiConverterTypeConnectivityManagerReconciler.handleMap.remove(handle)
-        }
-    }
-
-    internal object uniffiClone: UniffiCallbackInterfaceClone {
-        override fun callback(handle: Long): Long {
-            return FfiConverterTypeConnectivityManagerReconciler.handleMap.clone(handle)
-        }
-    }
-
-    internal var vtable = UniffiVTableCallbackInterfaceConnectivityManagerReconciler.UniffiByValue(
-        uniffiFree,
-        uniffiClone,
-        `reconcile`,
-    )
-
-    // Registers the foreign callback with the Rust side.
-    // This method is generated for each callback interface.
-    internal fun register(lib: UniffiLib) {
-        lib.uniffi_cove_fn_init_callback_vtable_connectivitymanagerreconciler(vtable)
-    }
-}
-
-/**
- * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
- *
- * @suppress
- */
-public object FfiConverterTypeConnectivityManagerReconciler: FfiConverterCallbackInterface<ConnectivityManagerReconciler>()
 
 
 
